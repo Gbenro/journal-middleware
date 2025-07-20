@@ -1,6 +1,6 @@
-# Journal Middleware Service
+# Journal Middleware Service with Intelligent Tags
 
-FastAPI middleware service for the GPT Agent Journaling System. This service provides API authentication, request routing, and acts as a secure gateway between GPT agents and the backend database service.
+FastAPI middleware service for the GPT Agent Journaling System with comprehensive tagging capabilities. This service provides API authentication, request routing, and acts as a secure gateway between GPT agents and the intelligent tagging backend.
 
 ## 🚀 Railway Deployment
 
@@ -25,32 +25,48 @@ This middleware service:
 - Provides security layer and request validation
 - Handles error responses and logging
 
-## 📚 API Endpoints
+## 📚 Enhanced API Endpoints
 
 ### Health Check
 ```
 GET /health
 ```
-Returns middleware health and backend connectivity status.
+Returns middleware health, backend connectivity, and available features.
 
-### Save Entry (Authenticated)
+### Save Entry with Tags (Authenticated)
 ```
 POST /save-entry
 X-API-Key: your-secret-api-key
 Content-Type: application/json
 
 {
-  "content": "Journal entry content",
-  "user_id": "user123"
+  "content": "Had a breakthrough with my coding project today!",
+  "user_id": "user123",
+  "manual_tags": ["coding", "work"],
+  "auto_tag": true
 }
 ```
 
-### Get Entries (Authenticated)
+### Get Entries with Tag Filtering (Authenticated)
 ```
-GET /get-entries/{user_id}?limit=50&offset=0
+GET /get-entries/{user_id}?limit=50&offset=0&tags=work,coding
 X-API-Key: your-secret-api-key
 ```
-Returns paginated journal entries for a user.
+Returns entries for a user, optionally filtered by tags.
+
+### Get Entries by Specific Tags
+```
+GET /get-entries-by-tags/{user_id}/{tag_names}
+X-API-Key: your-secret-api-key
+```
+
+### Tag Management
+```
+GET /get-tags - Get all available tags
+GET /get-tags-by-category - Get tags grouped by category
+POST /create-tag - Create new custom tag
+POST /suggest-tags - Get AI tag suggestions for content
+```
 
 ## 🔐 Authentication
 
@@ -70,28 +86,55 @@ export API_KEY="your-secret-api-key"
 uvicorn main:app --reload --port 8001
 ```
 
-## 🤖 GPT Agent Usage
+## 🤖 Enhanced GPT Agent Usage
 
-GPT agents can use this service to store and retrieve journal entries:
+GPT agents can use intelligent tagging features:
 
 ```python
 import requests
 
 headers = {"X-API-Key": "your-secret-api-key"}
 
-# Save an entry
+# Save entry with manual tags and auto-tagging
 response = requests.post(
     "https://your-middleware.railway.app/save-entry",
     headers=headers,
-    json={"content": "Today I learned...", "user_id": "gpt_agent_1"}
+    json={
+        "content": "Fixed the API bug in production deployment",
+        "user_id": "gpt_agent_1",
+        "manual_tags": ["work", "coding"],
+        "auto_tag": True
+    }
 )
 
-# Get entries
+# Get entries filtered by tags
 response = requests.get(
-    "https://your-middleware.railway.app/get-entries/gpt_agent_1",
+    "https://your-middleware.railway.app/get-entries/gpt_agent_1?tags=work,coding",
+    headers=headers
+)
+
+# Get tag suggestions
+response = requests.post(
+    "https://your-middleware.railway.app/suggest-tags",
+    headers=headers,
+    json={"content": "Had coffee with my sister and talked about family"}
+)
+
+# Get all available tags
+response = requests.get(
+    "https://your-middleware.railway.app/get-tags",
     headers=headers
 )
 ```
+
+## 🏷️ Tag Categories
+
+The system includes predefined tags in multiple categories:
+
+- **Emotions**: gratitude, joy, stress, reflection, accomplishment
+- **Life Areas**: work, family, friends, health, learning
+- **Activities**: coding, reading, exercise, travel, breakthrough
+- **Goals**: goal-setting, progress, challenge, milestone
 
 ## 🔗 Related Services
 
