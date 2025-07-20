@@ -41,9 +41,7 @@ class MessageResponse(BaseModel):
     id: int
     content: str
     user_id: str
-    timestamp: datetime
-    created_at: datetime
-    updated_at: datetime
+    timestamp: str  # SQLite returns ISO string, not datetime object
 
 # Dependency for API key authentication
 async def verify_api_key(x_api_key: str = Header(...)):
@@ -99,7 +97,7 @@ async def save_entry(entry: EntryCreate):
                 return EntryResponse(
                     success=True,
                     message="Journal entry saved successfully",
-                    id=data.get("id")
+                    id=data.get("message_id")
                 )
             else:
                 logger.error(f"Backend returned error: {response.status_code}")
@@ -121,7 +119,7 @@ async def save_entry(entry: EntryCreate):
             detail="An unexpected error occurred. Please try again."
         )
 
-@app.get("/get-entries/{user_id}", response_model=List[MessageResponse], dependencies=[Depends(verify_api_key)])
+@app.get("/get-entries/{user_id}", dependencies=[Depends(verify_api_key)])
 async def get_entries(user_id: str, limit: Optional[int] = 50, offset: Optional[int] = 0):
     """Retrieve journal entries for a user via the backend API"""
     try:
@@ -133,9 +131,16 @@ async def get_entries(user_id: str, limit: Optional[int] = 50, offset: Optional[
             )
             
             if response.status_code == 200:
-                messages = response.json()
+                data = response.json()
+                messages = data.get("messages", [])
                 logger.info(f"Retrieved {len(messages)} entries for user {user_id}")
-                return messages
+                
+                # Return in a clean format for GPT
+                return {
+                    "success": True,
+                    "entries": messages,
+                    "count": len(messages)
+                }
             else:
                 logger.error(f"Backend returned error: {response.status_code}")
                 raise HTTPException(
