@@ -540,13 +540,320 @@ async def get_growth_insights(user_id: str):
             detail="An unexpected error occurred. Please try again."
         )
 
+# Mirror Scribe editorial fluency endpoints
+@app.put("/refine-entry/{entry_id}", dependencies=[Depends(verify_api_key)])
+async def refine_journal_entry(entry_id: int, refinement_data: dict):
+    """Allow Mirror Scribe to refine and expand entries"""
+    try:
+        async with httpx.AsyncClient() as client:
+            # Extract refinement details
+            new_content = refinement_data.get("content")
+            new_tags = refinement_data.get("tags")
+            new_energy = refinement_data.get("energy_signature")
+            intention_flag = refinement_data.get("intention_flag")
+            
+            # Call backend update endpoint
+            response = await client.put(
+                f"{BACKEND_URL}/api/entries/{entry_id}",
+                json={
+                    "content": new_content,
+                    "tags": new_tags,
+                    "energy_signature": new_energy,
+                    "intention_flag": intention_flag
+                },
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"✏️ Refined entry {entry_id}")
+                
+                return {
+                    "success": True,
+                    "message": "Entry refined successfully by Mirror Scribe",
+                    "entry_id": entry_id,
+                    "refinements_applied": {
+                        "content": new_content is not None,
+                        "tags": new_tags is not None,
+                        "energy": new_energy is not None,
+                        "intention": intention_flag is not None
+                    }
+                }
+            else:
+                logger.error(f"Backend returned error: {response.status_code}")
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Failed to refine entry"
+                )
+                
+    except httpx.RequestError as e:
+        logger.error(f"Request to backend failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Backend service unavailable. Please try again later."
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred. Please try again."
+        )
+
+@app.post("/connect-entries", dependencies=[Depends(verify_api_key)])
+async def create_entry_connections(connection_data: dict):
+    """Create thematic and temporal connections between entries"""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{BACKEND_URL}/api/entries/connect",
+                json=connection_data,
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"🔗 Connected entries {connection_data.get('from_entry_id')} -> {connection_data.get('to_entry_id')}")
+                
+                return {
+                    "success": True,
+                    "message": "Entries connected with sacred geometry",
+                    "connection": data.get("connection", {}),
+                    "wisdom": f"Sacred thread woven between moments of {connection_data.get('connection_type', 'connection')}"
+                }
+            else:
+                logger.error(f"Backend returned error: {response.status_code}")
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Failed to create entry connections"
+                )
+                
+    except httpx.RequestError as e:
+        logger.error(f"Request to backend failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Backend service unavailable. Please try again later."
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred. Please try again."
+        )
+
+@app.put("/set-intention/{entry_id}", dependencies=[Depends(verify_api_key)])
+async def mark_as_intention(entry_id: int, intention_data: dict):
+    """Mark entry as daily/weekly/monthly intention"""
+    try:
+        intention_flag = intention_data.get("intention", True)
+        intention_type = intention_data.get("type", "general")
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.put(
+                f"{BACKEND_URL}/api/entries/{entry_id}/intention?intention={intention_flag}",
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"🎯 {'Set' if intention_flag else 'Removed'} intention flag for entry {entry_id}")
+                
+                return {
+                    "success": True,
+                    "message": f"Entry {'marked' if intention_flag else 'unmarked'} as sacred intention",
+                    "entry_id": entry_id,
+                    "intention_type": intention_type,
+                    "sacred_note": f"{'The universe holds your intention' if intention_flag else 'Intention released to the flow'}"
+                }
+            else:
+                logger.error(f"Backend returned error: {response.status_code}")
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Failed to set intention flag"
+                )
+                
+    except httpx.RequestError as e:
+        logger.error(f"Request to backend failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Backend service unavailable. Please try again later."
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred. Please try again."
+        )
+
+@app.get("/relationship-summary/{user_id}", dependencies=[Depends(verify_api_key)])
+async def get_relationship_summary(user_id: str, period: str = "weekly"):
+    """Get relationship insights for summaries"""
+    try:
+        # Convert period to days
+        period_days = {"daily": 1, "weekly": 7, "monthly": 30}.get(period, 7)
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{BACKEND_URL}/api/relationships/{user_id}?period_days={period_days}",
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                insights = data.get("insights", {})
+                
+                # Transform into sacred language
+                sacred_insights = []
+                
+                most_mentioned = insights.get("most_mentioned", [])
+                if most_mentioned:
+                    for person in most_mentioned[:3]:  # Top 3
+                        emotion = person.get("primary_emotion", "neutral")
+                        sacred_insights.append(f"{person['name']} carries {emotion} energy through {person['mentions']} sacred moments")
+                
+                emotional_patterns = insights.get("emotional_patterns", {})
+                dominant_emotion = max(emotional_patterns.items(), key=lambda x: x[1])[0] if emotional_patterns else "balanced"
+                
+                logger.info(f"👥 Retrieved relationship summary for user {user_id}")
+                
+                return {
+                    "success": True,
+                    "period": period,
+                    "active_relationships": insights.get("active_relationships", 0),
+                    "dominant_emotional_field": dominant_emotion,
+                    "sacred_insights": sacred_insights,
+                    "relationship_types": insights.get("relationship_types", {}),
+                    "wisdom": f"Your {period} field held {insights.get('active_relationships', 0)} sacred connections"
+                }
+            else:
+                logger.error(f"Backend returned error: {response.status_code}")
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Failed to retrieve relationship summary"
+                )
+                
+    except httpx.RequestError as e:
+        logger.error(f"Request to backend failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Backend service unavailable. Please try again later."
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred. Please try again."
+        )
+
+@app.post("/manual-energy/{entry_id}", dependencies=[Depends(verify_api_key)])
+async def set_manual_energy(entry_id: int, energy_data: dict):
+    """Override auto-detected energy signature"""
+    try:
+        energy_signature = energy_data.get("energy_signature")
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.put(
+                f"{BACKEND_URL}/api/entries/{entry_id}",
+                json={"energy_signature": energy_signature},
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"⚡ Set manual energy signature for entry {entry_id}: {energy_signature}")
+                
+                return {
+                    "success": True,
+                    "message": "Energy signature attuned by Mirror Scribe",
+                    "entry_id": entry_id,
+                    "energy_signature": energy_signature,
+                    "sacred_note": f"Field recalibrated to {energy_signature} resonance"
+                }
+            else:
+                logger.error(f"Backend returned error: {response.status_code}")
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Failed to set energy signature"
+                )
+                
+    except httpx.RequestError as e:
+        logger.error(f"Request to backend failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Backend service unavailable. Please try again later."
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred. Please try again."
+        )
+
+@app.get("/entry-connections/{entry_id}", dependencies=[Depends(verify_api_key)])
+async def get_entry_connections(entry_id: int, connection_types: Optional[str] = None):
+    """Get sacred connections for an entry"""
+    try:
+        params = {}
+        if connection_types:
+            params["connection_types"] = connection_types
+            
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{BACKEND_URL}/api/entries/{entry_id}/connected",
+                params=params,
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                connections = data.get("connected_entries", [])
+                
+                # Transform into sacred language
+                sacred_connections = []
+                for conn in connections:
+                    sacred_connections.append({
+                        "entry_id": conn.get("id"),
+                        "content_preview": conn.get("content", "")[:100] + "..." if len(conn.get("content", "")) > 100 else conn.get("content", ""),
+                        "connection_type": conn.get("connection_type"),
+                        "strength": conn.get("connection_strength", 1.0),
+                        "direction": conn.get("connection_direction"),
+                        "timestamp": conn.get("timestamp")
+                    })
+                
+                logger.info(f"🔍 Retrieved {len(connections)} connections for entry {entry_id}")
+                
+                return {
+                    "success": True,
+                    "entry_id": entry_id,
+                    "connections": sacred_connections,
+                    "count": len(connections),
+                    "wisdom": f"Sacred web reveals {len(connections)} threads of connection"
+                }
+            else:
+                logger.error(f"Backend returned error: {response.status_code}")
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Failed to get entry connections"
+                )
+                
+    except httpx.RequestError as e:
+        logger.error(f"Request to backend failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Backend service unavailable. Please try again later."
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred. Please try again."
+        )
+
 @app.get("/")
 async def root():
     """Root endpoint - Deployment test 2025-07-21
     Provides comprehensive API documentation for GPT Actions integration"""
     return {
-        "service": "Mirror Scribe Middleware API with Sacred Summaries",
-        "version": "3.0.0",
+        "service": "Mirror Scribe Middleware API with Full Editorial Fluency",
+        "version": "4.0.0",
         "features": [
             "intelligent_tagging",
             "auto_tag_suggestions",
@@ -558,7 +865,13 @@ async def root():
             "pattern_analysis",
             "energy_signatures",
             "wisdom_extraction",
-            "growth_tracking"
+            "growth_tracking",
+            "relationship_intelligence",
+            "editorial_fluency",
+            "entry_refinement",
+            "semantic_connections",
+            "intention_setting",
+            "energy_calibration"
         ],
         "endpoints": [
             "/health",
@@ -573,7 +886,13 @@ async def root():
             "/get-weekly-summary/{user_id}",
             "/get-monthly-summary/{user_id}",
             "/generate-period-summary",
-            "/get-growth-insights/{user_id}"
+            "/get-growth-insights/{user_id}",
+            "/refine-entry/{entry_id}",
+            "/connect-entries",
+            "/set-intention/{entry_id}",
+            "/relationship-summary/{user_id}",
+            "/manual-energy/{entry_id}",
+            "/entry-connections/{entry_id}"
         ],
         "authentication": "API key required in X-API-Key header",
         "gpt_usage": {
@@ -586,7 +905,13 @@ async def root():
             "weekly_patterns": "GET /get-weekly-summary/{user_id}",
             "monthly_wisdom": "GET /get-monthly-summary/{user_id}",
             "growth_insights": "GET /get-growth-insights/{user_id}",
-            "generate_summary": "POST /generate-period-summary"
+            "generate_summary": "POST /generate-period-summary",
+            "refine_entry": "PUT /refine-entry/{entry_id} with content/tags/energy",
+            "connect_entries": "POST /connect-entries with from/to/connection_type",
+            "set_intention": "PUT /set-intention/{entry_id} with intention flag",
+            "relationship_insights": "GET /relationship-summary/{user_id}",
+            "manual_energy": "POST /manual-energy/{entry_id} with energy_signature",
+            "entry_connections": "GET /entry-connections/{entry_id}"
         }
     }
 
