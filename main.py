@@ -70,11 +70,14 @@ async def log_to_observer(user_id: str, action_type: str, success: bool = True,
                          metadata: Optional[dict] = None):
     """Fire-and-forget logging to observer service"""
     if not OBSERVER_ENABLED:
+        logger.info(f"🔕 Observer disabled - skipping log for {action_type}")
         return
+    
+    logger.info(f"📤 Attempting to log to observer: {action_type} for user {user_id}")
     
     try:
         async with httpx.AsyncClient(timeout=1.0) as client:
-            await client.post(
+            response = await client.post(
                 f"{OBSERVER_URL}/observe",
                 json={
                     "user_id": user_id,
@@ -85,9 +88,44 @@ async def log_to_observer(user_id: str, action_type: str, success: bool = True,
                     "metadata": metadata
                 }
             )
+            logger.info(f"✅ Observer log successful: {response.status_code}")
+    except httpx.ConnectError as e:
+        logger.warning(f"🔌 Observer connection failed: {OBSERVER_URL} - {str(e)}")
+    except httpx.TimeoutException as e:
+        logger.warning(f"⏱️ Observer timeout: {OBSERVER_URL}")
     except Exception as e:
-        # Silently ignore errors - don't affect user experience
-        logger.debug(f"Observer logging failed (ignored): {e}")
+        logger.warning(f"❌ Observer logging failed: {type(e).__name__}: {str(e)}")
+
+@app.get("/test-observer")
+async def test_observer():
+    """Test endpoint to verify observer connectivity"""
+    logger.info("🧪 Testing observer connection...")
+    
+    # Create a test task
+    test_task = asyncio.create_task(log_to_observer(
+        user_id="test-user",
+        action_type="test",
+        success=True,
+        response_time=123.45,
+        metadata={"test": True, "timestamp": datetime.now().isoformat()}
+    ))
+    
+    # Wait for it to complete (normally we wouldn't wait)
+    try:
+        await asyncio.wait_for(test_task, timeout=2.0)
+        return {
+            "status": "test_sent",
+            "observer_url": OBSERVER_URL,
+            "observer_enabled": OBSERVER_ENABLED,
+            "message": "Check observer logs for test interaction"
+        }
+    except asyncio.TimeoutError:
+        return {
+            "status": "timeout",
+            "observer_url": OBSERVER_URL,
+            "observer_enabled": OBSERVER_ENABLED,
+            "message": "Observer request timed out"
+        }
 
 @app.get("/health")
 async def health_check():
@@ -98,11 +136,26 @@ async def health_check():
             response = await client.get(f"{BACKEND_URL}/health", timeout=5.0)
             backend_health = response.json()
         
+        # Test observer connection if enabled
+        observer_status = "disabled"
+        if OBSERVER_ENABLED:
+            try:
+                async with httpx.AsyncClient() as client:
+                    obs_response = await client.get(f"{OBSERVER_URL}/", timeout=2.0)
+                    observer_status = "connected" if obs_response.status_code == 200 else "unreachable"
+            except:
+                observer_status = "unreachable"
+        
         return {
             "status": "healthy",
             "service": "middleware",
             "backend": backend_health.get("status", "unknown"),
             "backend_url": BACKEND_URL,
+            "observer": {
+                "status": observer_status,
+                "url": OBSERVER_URL,
+                "enabled": OBSERVER_ENABLED
+            },
             "features": backend_health.get("features", []),
             "timestamp": datetime.utcnow()
         }
@@ -112,6 +165,11 @@ async def health_check():
             "status": "degraded",
             "service": "middleware",
             "backend": "unreachable",
+            "observer": {
+                "status": "unknown",
+                "url": OBSERVER_URL,
+                "enabled": OBSERVER_ENABLED
+            },
             "error": str(e),
             "timestamp": datetime.utcnow()
         }
@@ -1049,7 +1107,19 @@ async def root():
         }
     }
 
+@app.on_event("startup")
+async def startup_event():
+    """Log startup information"""
+    logger.info("🚀 Journal Middleware starting up...")
+    logger.info(f"📡 Backend URL: {BACKEND_URL}")
+    logger.info(f"🔍 Observer URL: {OBSERVER_URL}")
+    logger.info(f"🔔 Observer Enabled: {OBSERVER_ENABLED}")
+    logger.info(f"🔑 API Key configured: {'Yes' if API_KEY != 'your-secret-api-key' else 'No (using default)'}")
+    logger.info(f"📍 Service will listen on port: {os.environ.get('PORT', 8001)}")
+    logger.info("✅ Ready to handle requests")
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8001))
+    logger.info(f"🔧 Starting Journal Middleware on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
