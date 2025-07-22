@@ -1039,6 +1039,291 @@ async def get_entry_connections(entry_id: int, connection_types: Optional[str] =
             detail="An unexpected error occurred. Please try again."
         )
 
+# Sacred Thread Navigation Endpoints with Poetic Responses
+@app.get("/gpt/tags/explore/{user_id}", dependencies=[Depends(verify_api_key)])
+async def explore_sacred_threads(user_id: str):
+    """Explore user's tag landscape with interpretive insights"""
+    start_time = datetime.now()
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{BACKEND_URL}/api/gpt/tags/list/{user_id}",
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                tags = data.get("tags", [])
+                
+                # Add poetic interpretations
+                sacred_insights = []
+                for tag in tags[:10]:  # Top 10 most used
+                    tag_name = tag["tag"]
+                    count = tag["count"]
+                    first_used = tag["first_used"]
+                    
+                    # Calculate time since first use
+                    if first_used:
+                        first_date = datetime.fromisoformat(first_used.replace('Z', '+00:00'))
+                        days_ago = (datetime.now(first_date.tzinfo) - first_date).days
+                        
+                        if count >= 5:
+                            insight = f"Your '{tag_name}' thread weaves through {count} entries, growing stronger since {days_ago} days ago"
+                        elif count >= 3:
+                            insight = f"'{tag_name}' emerges as a gentle pattern across {count} moments"
+                        else:
+                            insight = f"'{tag_name}' appears {count} times - a seed of awareness"
+                    else:
+                        insight = f"'{tag_name}' carries the essence of {count} sacred moments"
+                    
+                    sacred_insights.append({
+                        "tag": tag_name,
+                        "count": count,
+                        "category": tag["category"],
+                        "wisdom": insight
+                    })
+                
+                # Log successful operation
+                response_time = (datetime.now() - start_time).total_seconds() * 1000
+                asyncio.create_task(log_to_observer(
+                    user_id=user_id,
+                    action_type="analyze",
+                    success=True,
+                    response_time=response_time,
+                    metadata={"endpoint": "explore_tags", "tag_count": len(tags)}
+                ))
+                
+                return {
+                    "success": True,
+                    "user_id": user_id,
+                    "total_threads": len(tags),
+                    "sacred_landscape": sacred_insights,
+                    "wisdom": f"Your consciousness has woven {len(tags)} unique threads through the tapestry of time"
+                }
+            else:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Failed to explore sacred threads"
+                )
+                
+    except httpx.RequestError as e:
+        logger.error(f"Request to backend failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Sacred thread exploration unavailable. Please try again later."
+        )
+
+@app.get("/gpt/tags/evolution/{user_id}", dependencies=[Depends(verify_api_key)])
+async def view_tag_evolution(user_id: str, period: str = "weekly"):
+    """View temporal evolution with growth narrative"""
+    start_time = datetime.now()
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{BACKEND_URL}/api/gpt/tags/temporal/{user_id}?period={period}",
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                periods = data.get("periods", [])
+                
+                # Create growth narrative
+                evolutionary_insights = []
+                for period_data in periods[:6]:  # Last 6 periods
+                    new_tags = period_data.get("new_tags", [])
+                    trending = period_data.get("trending", [])
+                    period_name = period_data.get("period")
+                    
+                    narrative = f"During {period_name}: "
+                    if new_tags:
+                        narrative += f"New consciousness emerged through '{', '.join(new_tags[:3])}'. "
+                    if trending:
+                        narrative += f"Energy flowed strongest through '{trending[0]}'"
+                    
+                    evolutionary_insights.append({
+                        "period": period_name,
+                        "new_emergence": new_tags,
+                        "dominant_flow": trending,
+                        "narrative": narrative
+                    })
+                
+                # Log successful operation
+                response_time = (datetime.now() - start_time).total_seconds() * 1000
+                asyncio.create_task(log_to_observer(
+                    user_id=user_id,
+                    action_type="analyze",
+                    success=True,
+                    response_time=response_time,
+                    metadata={"endpoint": "tag_evolution", "period": period}
+                ))
+                
+                return {
+                    "success": True,
+                    "user_id": user_id,
+                    "period_type": period,
+                    "evolution_story": evolutionary_insights,
+                    "sacred_wisdom": f"Your {period} journey reveals the dance of expanding awareness through time"
+                }
+            else:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Failed to access evolutionary timeline"
+                )
+                
+    except httpx.RequestError as e:
+        logger.error(f"Request to backend failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Evolution timeline unavailable. Please try again later."
+        )
+
+@app.get("/gpt/tags/thread/{tag_name}", dependencies=[Depends(verify_api_key)])
+async def follow_sacred_thread(tag_name: str, user_id: str):
+    """Follow a specific tag thread with sacred storytelling"""
+    start_time = datetime.now()
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{BACKEND_URL}/api/gpt/tags/preview/{tag_name}?user_id={user_id}",
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                entries = data.get("entries", [])
+                total_entries = data.get("total_entries", 0)
+                first_use = data.get("first_use")
+                
+                # Create sacred thread narrative
+                thread_story = []
+                for i, entry in enumerate(entries):
+                    preview = entry["preview"]
+                    date = entry["date"]
+                    emotion = entry["emotion"]
+                    
+                    # Create poetic description
+                    if i == 0:
+                        story_line = f"Most recently, on {date[:10]}, '{tag_name}' manifested as: \"{preview}\" (Energy: {emotion})"
+                    elif i < 3:
+                        story_line = f"Earlier, this thread wove through: \"{preview}\" (Energy: {emotion})"
+                    else:
+                        story_line = f"The pattern continues: \"{preview}\""
+                    
+                    thread_story.append({
+                        "date": date,
+                        "preview": preview,
+                        "emotion": emotion,
+                        "story": story_line
+                    })
+                
+                # Calculate thread age
+                thread_wisdom = f"The '{tag_name}' thread has been weaving through your consciousness"
+                if first_use:
+                    first_date = datetime.fromisoformat(first_use.replace('Z', '+00:00'))
+                    days_ago = (datetime.now(first_date.tzinfo) - first_date).days
+                    thread_wisdom += f" for {days_ago} days, appearing in {total_entries} sacred moments"
+                
+                # Log successful operation
+                response_time = (datetime.now() - start_time).total_seconds() * 1000
+                asyncio.create_task(log_to_observer(
+                    user_id=user_id,
+                    action_type="search",
+                    success=True,
+                    response_time=response_time,
+                    metadata={"endpoint": "sacred_thread", "tag": tag_name, "entries": len(entries)}
+                ))
+                
+                return {
+                    "success": True,
+                    "tag": tag_name,
+                    "total_manifestations": total_entries,
+                    "thread_story": thread_story,
+                    "sacred_wisdom": thread_wisdom,
+                    "evolution_insight": f"This thread shows the deepening of your '{tag_name}' awareness across time"
+                }
+            else:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Sacred thread '{tag_name}' not found or inaccessible"
+                )
+                
+    except httpx.RequestError as e:
+        logger.error(f"Request to backend failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Sacred thread navigation unavailable. Please try again later."
+        )
+
+@app.get("/gpt/tags/web-of-connection/{user_id}", dependencies=[Depends(verify_api_key)])
+async def view_sacred_web(user_id: str):
+    """View the interconnected web of tag relationships"""
+    start_time = datetime.now()
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{BACKEND_URL}/api/gpt/tags/sacred-threads/{user_id}",
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                relationships = data.get("tag_relationships", [])
+                timeline = data.get("tag_timeline", [])
+                insights = data.get("insights", {})
+                
+                # Create web narrative
+                connection_wisdom = []
+                for rel in relationships[:5]:  # Top 5 connections
+                    tags = rel["tags"]
+                    strength = rel["strength"]
+                    wisdom = f"'{tags[0]}' and '{tags[1]}' dance together across {strength} shared moments - a sacred partnership"
+                    connection_wisdom.append({
+                        "connection": tags,
+                        "strength": strength,
+                        "wisdom": wisdom
+                    })
+                
+                # Timeline insights
+                active_threads = [t for t in timeline if t["status"] == "active"]
+                dormant_threads = [t for t in timeline if t["status"] == "dormant"]
+                
+                # Log successful operation
+                response_time = (datetime.now() - start_time).total_seconds() * 1000
+                asyncio.create_task(log_to_observer(
+                    user_id=user_id,
+                    action_type="analyze",
+                    success=True,
+                    response_time=response_time,
+                    metadata={"endpoint": "sacred_web", "relationships": len(relationships)}
+                ))
+                
+                return {
+                    "success": True,
+                    "user_id": user_id,
+                    "sacred_connections": connection_wisdom,
+                    "active_threads": len(active_threads),
+                    "dormant_threads": len(dormant_threads),
+                    "web_wisdom": f"Your consciousness weaves {len(relationships)} sacred connections, with {len(active_threads)} threads currently flowing",
+                    "deepest_connection": relationships[0] if relationships else None
+                }
+            else:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Sacred web inaccessible"
+                )
+                
+    except httpx.RequestError as e:
+        logger.error(f"Request to backend failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Sacred web navigation unavailable. Please try again later."
+        )
+
 @app.get("/")
 async def root():
     """Root endpoint - Deployment test 2025-07-21
