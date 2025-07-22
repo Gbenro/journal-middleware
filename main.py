@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import logging
+import asyncio
 
 # Configure logging - Enhanced for Railway deployment monitoring
 # Version 2025-07-21: Added for consistent storage testing
@@ -28,6 +29,8 @@ app.add_middleware(
 # Backend URL dynamically configured for production/development environments
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000")
 API_KEY = os.environ.get("API_KEY", "your-secret-api-key")
+OBSERVER_URL = os.environ.get("OBSERVER_URL", "http://localhost:8001")
+OBSERVER_ENABLED = os.environ.get("OBSERVER_ENABLED", "true").lower() == "true"
 
 # Pydantic models
 class EntryCreate(BaseModel):
@@ -61,6 +64,31 @@ async def verify_api_key(x_api_key: str = Header(...)):
         raise HTTPException(status_code=401, detail="Invalid API key")
     return x_api_key
 
+# Fire-and-forget observer logging function
+async def log_to_observer(user_id: str, action_type: str, success: bool = True, 
+                         response_time: Optional[float] = None, error_message: Optional[str] = None,
+                         metadata: Optional[dict] = None):
+    """Fire-and-forget logging to observer service"""
+    if not OBSERVER_ENABLED:
+        return
+    
+    try:
+        async with httpx.AsyncClient(timeout=1.0) as client:
+            await client.post(
+                f"{OBSERVER_URL}/observe",
+                json={
+                    "user_id": user_id,
+                    "action_type": action_type,
+                    "success": success,
+                    "response_time": response_time,
+                    "error_message": error_message,
+                    "metadata": metadata
+                }
+            )
+    except Exception as e:
+        # Silently ignore errors - don't affect user experience
+        logger.debug(f"Observer logging failed (ignored): {e}")
+
 @app.get("/health")
 async def health_check():
     """Check middleware health and backend connectivity"""
@@ -91,6 +119,7 @@ async def health_check():
 @app.post("/save-entry", response_model=EntryResponse, dependencies=[Depends(verify_api_key)])
 async def save_entry(entry: EntryCreate):
     """Save a journal entry with tag support via the backend API"""
+    start_time = datetime.now()
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -107,6 +136,21 @@ async def save_entry(entry: EntryCreate):
             if response.status_code == 200:
                 data = response.json()
                 logger.info(f"Entry saved successfully for user {entry.user_id} with {data.get('tag_count', 0)} tags")
+                
+                # Log to observer service (fire-and-forget)
+                response_time = (datetime.now() - start_time).total_seconds() * 1000
+                asyncio.create_task(log_to_observer(
+                    user_id=entry.user_id,
+                    action_type="store",
+                    success=True,
+                    response_time=response_time,
+                    metadata={
+                        "tag_count": data.get("tag_count", 0),
+                        "auto_tagged": entry.auto_tag,
+                        "manual_tags": len(entry.manual_tags) if entry.manual_tags else 0
+                    }
+                ))
+                
                 return EntryResponse(
                     success=True,
                     message="Journal entry saved successfully",
@@ -115,6 +159,17 @@ async def save_entry(entry: EntryCreate):
                 )
             else:
                 logger.error(f"Backend returned error: {response.status_code}")
+                
+                # Log failure to observer
+                response_time = (datetime.now() - start_time).total_seconds() * 1000
+                asyncio.create_task(log_to_observer(
+                    user_id=entry.user_id,
+                    action_type="store",
+                    success=False,
+                    response_time=response_time,
+                    error_message=f"Backend error: {response.status_code}"
+                ))
+                
                 raise HTTPException(
                     status_code=response.status_code,
                     detail="Failed to save entry to backend"
@@ -122,12 +177,34 @@ async def save_entry(entry: EntryCreate):
                 
     except httpx.RequestError as e:
         logger.error(f"Request to backend failed: {e}")
+        
+        # Log failure to observer
+        response_time = (datetime.now() - start_time).total_seconds() * 1000
+        asyncio.create_task(log_to_observer(
+            user_id=entry.user_id,
+            action_type="store",
+            success=False,
+            response_time=response_time,
+            error_message=f"Request error: {str(e)}"
+        ))
+        
         raise HTTPException(
             status_code=503,
             detail="Backend service unavailable. Please try again later."
         )
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
+        
+        # Log failure to observer
+        response_time = (datetime.now() - start_time).total_seconds() * 1000
+        asyncio.create_task(log_to_observer(
+            user_id=entry.user_id,
+            action_type="store",
+            success=False,
+            response_time=response_time,
+            error_message=f"Unexpected error: {str(e)}"
+        ))
+        
         raise HTTPException(
             status_code=500,
             detail="An unexpected error occurred. Please try again."
@@ -136,6 +213,9 @@ async def save_entry(entry: EntryCreate):
 @app.get("/get-entries/{user_id}", dependencies=[Depends(verify_api_key)])
 async def get_entries(user_id: str, limit: Optional[int] = 50, offset: Optional[int] = 0, tags: Optional[str] = None):
     """Retrieve journal entries for a user with optional tag filtering"""
+    start_time = datetime.now()
+    action_type = "search" if tags else "recall"
+    
     try:
         async with httpx.AsyncClient() as client:
             params = {"limit": limit, "offset": offset}
@@ -153,6 +233,21 @@ async def get_entries(user_id: str, limit: Optional[int] = 50, offset: Optional[
                 messages = data.get("messages", [])
                 logger.info(f"Retrieved {len(messages)} entries for user {user_id}")
                 
+                # Log to observer service (fire-and-forget)
+                response_time = (datetime.now() - start_time).total_seconds() * 1000
+                asyncio.create_task(log_to_observer(
+                    user_id=user_id,
+                    action_type=action_type,
+                    success=True,
+                    response_time=response_time,
+                    metadata={
+                        "entry_count": len(messages),
+                        "limit": limit,
+                        "offset": offset,
+                        "tags_filter": tags if tags else None
+                    }
+                ))
+                
                 # Return in a clean format for GPT
                 return {
                     "success": True,
@@ -162,6 +257,17 @@ async def get_entries(user_id: str, limit: Optional[int] = 50, offset: Optional[
                 }
             else:
                 logger.error(f"Backend returned error: {response.status_code}")
+                
+                # Log failure to observer
+                response_time = (datetime.now() - start_time).total_seconds() * 1000
+                asyncio.create_task(log_to_observer(
+                    user_id=user_id,
+                    action_type=action_type,
+                    success=False,
+                    response_time=response_time,
+                    error_message=f"Backend error: {response.status_code}"
+                ))
+                
                 raise HTTPException(
                     status_code=response.status_code,
                     detail="Failed to retrieve entries from backend"
@@ -330,6 +436,8 @@ async def suggest_tags(request: TagSuggestionRequest):
 @app.get("/get-daily-summary/{user_id}", dependencies=[Depends(verify_api_key)])
 async def get_daily_summary(user_id: str):
     """Get today's sacred reflection"""
+    start_time = datetime.now()
+    
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
@@ -342,6 +450,20 @@ async def get_daily_summary(user_id: str):
                 summary = data.get("summary")
                 logger.info(f"Retrieved daily summary for user {user_id}")
                 
+                # Log to observer service (fire-and-forget)
+                response_time = (datetime.now() - start_time).total_seconds() * 1000
+                asyncio.create_task(log_to_observer(
+                    user_id=user_id,
+                    action_type="analyze",
+                    success=True,
+                    response_time=response_time,
+                    metadata={
+                        "summary_type": "daily",
+                        "entry_count": summary.get("entry_count", 0),
+                        "dominant_tags": len(summary.get("dominant_tags", []))
+                    }
+                ))
+                
                 return {
                     "success": True,
                     "sacred_summary": summary.get("sacred_summary"),
@@ -352,6 +474,18 @@ async def get_daily_summary(user_id: str):
                 }
             else:
                 logger.error(f"Backend returned error: {response.status_code}")
+                
+                # Log failure to observer
+                response_time = (datetime.now() - start_time).total_seconds() * 1000
+                asyncio.create_task(log_to_observer(
+                    user_id=user_id,
+                    action_type="analyze",
+                    success=False,
+                    response_time=response_time,
+                    error_message=f"Backend error: {response.status_code}",
+                    metadata={"summary_type": "daily"}
+                ))
+                
                 raise HTTPException(
                     status_code=response.status_code,
                     detail="Failed to retrieve daily summary"
