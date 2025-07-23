@@ -1324,6 +1324,105 @@ async def view_sacred_web(user_id: str):
             detail="Sacred web navigation unavailable. Please try again later."
         )
 
+@app.get("/test-enhancement")
+async def test_enhancement():
+    """Create a test enhancement suggestion and send to proxy agent"""
+    try:
+        if not OBSERVER_ENABLED:
+            return {
+                "status": "skipped",
+                "message": "Observer is disabled",
+                "observer_enabled": OBSERVER_ENABLED
+            }
+        
+        # Create test enhancement
+        test_enhancement = {
+            "title": "Test Enhancement from Middleware",
+            "description": "This is a test enhancement suggestion to verify the complete flow from middleware to proxy agent to backend.",
+            "category": "testing",
+            "priority": "low",
+            "reasoning": "Testing the enhancement system integration",
+            "triggered_by": "middleware-test-endpoint",
+            "user_context": {
+                "test": True,
+                "timestamp": datetime.now().isoformat(),
+                "source": "middleware"
+            }
+        }
+        
+        logger.info(f"📤 Sending test enhancement to observer: {OBSERVER_URL}/enhancements")
+        
+        # Send to proxy agent
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(
+                f"{OBSERVER_URL}/enhancements",
+                json=test_enhancement
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                logger.info(f"✅ Test enhancement sent successfully: {result}")
+                
+                return {
+                    "status": "success",
+                    "message": "Test enhancement sent to observer proxy",
+                    "enhancement": test_enhancement,
+                    "observer_response": result,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+            else:
+                logger.error(f"❌ Observer returned error: {response.status_code}")
+                return {
+                    "status": "error",
+                    "message": f"Observer returned status {response.status_code}",
+                    "observer_url": OBSERVER_URL
+                }
+                
+    except httpx.ConnectError as e:
+        logger.error(f"🔌 Observer connection failed: {OBSERVER_URL} - {str(e)}")
+        return {
+            "status": "error",
+            "message": "Could not connect to observer proxy",
+            "observer_url": OBSERVER_URL,
+            "error": str(e)
+        }
+    except Exception as e:
+        logger.error(f"❌ Test enhancement failed: {e}")
+        return {
+            "status": "error",
+            "message": "Test enhancement failed",
+            "error": str(e)
+        }
+
+# Helper function to log enhancement suggestions to proxy
+async def log_enhancement_to_proxy(title: str, description: str, category: str, 
+                                 priority: str, reasoning: str, triggered_by: str,
+                                 user_context: Optional[dict] = None):
+    """Log enhancement suggestion to observer proxy agent"""
+    if not OBSERVER_ENABLED:
+        logger.info(f"🔕 Observer disabled - skipping enhancement log")
+        return
+    
+    logger.info(f"📤 Logging enhancement to observer: {title}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.post(
+                f"{OBSERVER_URL}/enhancements",
+                json={
+                    "title": title,
+                    "description": description,
+                    "category": category,
+                    "priority": priority,
+                    "reasoning": reasoning,
+                    "triggered_by": triggered_by,
+                    "user_context": user_context
+                }
+            )
+            logger.info(f"✅ Enhancement logged: {response.status_code}")
+    except Exception as e:
+        logger.warning(f"❌ Failed to log enhancement: {e}")
+
 @app.get("/")
 async def root():
     """Root endpoint - Deployment test 2025-07-21
@@ -1369,7 +1468,8 @@ async def root():
             "/set-intention/{entry_id}",
             "/relationship-summary/{user_id}",
             "/manual-energy/{entry_id}",
-            "/entry-connections/{entry_id}"
+            "/entry-connections/{entry_id}",
+            "/test-enhancement"
         ],
         "authentication": "API key required in X-API-Key header",
         "gpt_usage": {
