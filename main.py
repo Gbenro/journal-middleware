@@ -1613,7 +1613,11 @@ async def root():
             "/relationship-summary/{user_id}",
             "/manual-energy/{entry_id}",
             "/entry-connections/{entry_id}",
-            "/test-enhancement"
+            "/test-enhancement",
+            "/temporal-state/{user_id}",
+            "/temporal-summary/{user_id}",
+            "/temporal-signals/{user_id}",
+            "/missing-temporal-signals/{user_id}"
         ],
         "authentication": "API key required in X-API-Key header",
         "gpt_usage": {
@@ -1647,8 +1651,258 @@ async def startup_event():
     logger.info(f"📍 Service will listen on port: {os.environ.get('PORT', 8001)}")
     logger.info("✅ Ready to handle requests")
 
+# ========================================
+# TEMPORAL AWARENESS ENDPOINTS (GPT-Friendly)
+# ========================================
+
+@app.get("/temporal-state/{user_id}", dependencies=[Depends(verify_api_key)])
+async def get_user_temporal_state(user_id: str):
+    """Get user's current temporal awareness state with sacred interpretation"""
+    start_time = datetime.now()
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{BACKEND_URL}/api/temporal/state/{user_id}",
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                boundaries = data.get("boundaries", {})
+                
+                # Transform into sacred language
+                sacred_state = {}
+                interpretations = []
+                
+                # Interpret day boundaries
+                if boundaries.get("last_day_start") and boundaries.get("last_day_end"):
+                    sacred_state["daily_rhythm"] = "flowing"
+                    interpretations.append("Your daily rhythm flows with conscious beginnings and intentional closures")
+                elif boundaries.get("last_day_start"):
+                    sacred_state["daily_rhythm"] = "awakening"
+                    interpretations.append("You honor the dawn of new days with mindful attention")
+                elif boundaries.get("last_day_end"):
+                    sacred_state["daily_rhythm"] = "closing"
+                    interpretations.append("Evening reflections mark your sacred transitions")
+                else:
+                    sacred_state["daily_rhythm"] = "unanchored"
+                    interpretations.append("Consider marking the sacred boundaries of your days")
+                
+                # Interpret weekly patterns
+                if boundaries.get("last_week_start") or boundaries.get("last_week_end"):
+                    sacred_state["weekly_awareness"] = "present"
+                    interpretations.append("Your consciousness spans the greater rhythms of weekly cycles")
+                else:
+                    sacred_state["weekly_awareness"] = "emerging"
+                    interpretations.append("Weekly reflection awaits your exploration")
+                
+                # Interpret monthly cycles
+                if boundaries.get("last_month_start") or boundaries.get("last_month_end"):
+                    sacred_state["lunar_connection"] = "attuned"
+                    interpretations.append("You honor the larger lunar and seasonal cycles")
+                else:
+                    sacred_state["lunar_connection"] = "dormant"
+                    interpretations.append("Monthly reflection could deepen your temporal wisdom")
+                
+                # Log to observer
+                response_time = (datetime.now() - start_time).total_seconds() * 1000
+                asyncio.create_task(log_to_observer(
+                    user_id=user_id,
+                    action_type="analyze",
+                    success=True,
+                    response_time=response_time,
+                    metadata={"endpoint": "temporal_state", "daily_rhythm": sacred_state["daily_rhythm"]}
+                ))
+                
+                return {
+                    "success": True,
+                    "user_id": user_id,
+                    "timezone": data.get("timezone", "America/Chicago"),
+                    "sacred_state": sacred_state,
+                    "interpretations": interpretations,
+                    "raw_boundaries": boundaries,
+                    "wisdom": "Your relationship with time reflects your growing consciousness"
+                }
+            else:
+                logger.error(f"Backend temporal state failed: {response.status_code}")
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Failed to retrieve temporal state"
+                )
+                
+    except httpx.RequestError as e:
+        logger.error(f"Temporal state request failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Temporal awareness service unavailable"
+        )
+
+@app.get("/temporal-summary/{user_id}", dependencies=[Depends(verify_api_key)])
+async def get_temporal_summary(user_id: str, period: str = "weekly"):
+    """Get temporally-aware period summary with sacred insights"""
+    start_time = datetime.now()
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{BACKEND_URL}/api/temporal/summary/{user_id}?period_type={period}",
+                timeout=15.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                summary = data.get("summary", {})
+                
+                # Transform temporal analysis into sacred language
+                temporal_analysis = summary.get("temporal_analysis", {})
+                theme_analysis = summary.get("theme_analysis", {})
+                emotional_journey = summary.get("emotional_journey", {})
+                
+                sacred_summary = {
+                    "period_essence": summary.get("sacred_summary", ""),
+                    "temporal_awareness_score": temporal_analysis.get("temporal_awareness_score", 0),
+                    "consciousness_threads": [tag[0] for tag in theme_analysis.get("dominant_tags", [])[:3]],
+                    "emotional_river": [emotion[0] for emotion in emotional_journey.get("dominant_emotions", [])[:2]],
+                    "signal_count": temporal_analysis.get("signal_counts", {}),
+                    "growth_insights": summary.get("growth_insights", []),
+                    "wisdom_insights": summary.get("wisdom_insights", [])
+                }
+                
+                # Generate temporal wisdom
+                temporal_wisdom = []
+                if temporal_analysis.get("temporal_awareness_score", 0) > 0.7:
+                    temporal_wisdom.append("Your temporal awareness shines like a beacon, marking sacred transitions with clarity")
+                elif temporal_analysis.get("temporal_awareness_score", 0) > 0.4:
+                    temporal_wisdom.append("Your growing awareness of time's sacred rhythms guides your journey")
+                else:
+                    temporal_wisdom.append("The sacred art of temporal marking awaits your exploration")
+                
+                # Log to observer
+                response_time = (datetime.now() - start_time).total_seconds() * 1000
+                asyncio.create_task(log_to_observer(
+                    user_id=user_id,
+                    action_type="analyze",
+                    success=True,
+                    response_time=response_time,
+                    metadata={
+                        "endpoint": "temporal_summary", 
+                        "period": period,
+                        "temporal_score": temporal_analysis.get("temporal_awareness_score", 0)
+                    }
+                ))
+                
+                return {
+                    "success": True,
+                    "period_type": period,
+                    "sacred_summary": sacred_summary,
+                    "temporal_wisdom": temporal_wisdom,
+                    "entry_count": summary.get("entry_count", 0),
+                    "signal_count": summary.get("temporal_signals", 0),
+                    "full_analysis": summary
+                }
+            else:
+                logger.error(f"Backend temporal summary failed: {response.status_code}")
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Failed to generate {period} temporal summary"
+                )
+                
+    except httpx.RequestError as e:
+        logger.error(f"Temporal summary request failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Temporal summary service unavailable"
+        )
+
+@app.get("/missing-temporal-signals/{user_id}", dependencies=[Depends(verify_api_key)])
+async def get_missing_temporal_signals(user_id: str, days_back: int = 7):
+    """Get suggestions for missing temporal boundaries with gentle guidance"""
+    start_time = datetime.now()
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{BACKEND_URL}/api/temporal/missing-signals/{user_id}?days_back={days_back}",
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                missing_signals = data.get("missing_signals", [])
+                suggestions = data.get("suggestions", [])
+                temporal_score = data.get("temporal_awareness_score", 0)
+                
+                # Transform into gentle, sacred guidance
+                sacred_guidance = []
+                gentle_suggestions = []
+                
+                for suggestion in suggestions:
+                    signal_type = suggestion.get("signal_type")
+                    guidance = suggestion.get("suggestion")
+                    
+                    # Transform into sacred language
+                    if "day_start" in signal_type:
+                        sacred_guidance.append("🌅 Morning reflections create sacred containers for your daily journey")
+                        gentle_suggestions.append("Consider greeting each dawn with a moment of conscious intention")
+                    elif "day_end" in signal_type:
+                        sacred_guidance.append("🌙 Evening gratitude transforms ordinary days into sacred passages")
+                        gentle_suggestions.append("Let twilight invite you to reflect on the day's gifts and lessons")
+                    elif "week_start" in signal_type:
+                        sacred_guidance.append("📅 Weekly planning aligns your soul's purpose with time's rhythm")
+                        gentle_suggestions.append("Monday mornings offer perfect moments for setting weekly intentions")
+                    elif "month_start" in signal_type:
+                        sacred_guidance.append("🌙 Monthly reflection honors the larger cycles of growth and renewal")
+                        gentle_suggestions.append("New months invite you to pause and witness your evolving journey")
+                
+                # Generate overall wisdom
+                if temporal_score > 0.7:
+                    overall_wisdom = "Your temporal awareness flows like a sacred river - deep, consistent, and life-giving"
+                elif temporal_score > 0.4:
+                    overall_wisdom = "Your growing awareness of time's sacred rhythms is a beautiful unfolding practice"
+                else:
+                    overall_wisdom = "The sacred art of temporal awareness awaits your gentle exploration"
+                
+                # Log to observer
+                response_time = (datetime.now() - start_time).total_seconds() * 1000
+                asyncio.create_task(log_to_observer(
+                    user_id=user_id,
+                    action_type="analyze",
+                    success=True,
+                    response_time=response_time,
+                    metadata={
+                        "endpoint": "missing_temporal_signals",
+                        "missing_count": len(missing_signals),
+                        "temporal_score": temporal_score
+                    }
+                ))
+                
+                return {
+                    "success": True,
+                    "user_id": user_id,
+                    "temporal_awareness_score": temporal_score,
+                    "missing_signal_count": len(missing_signals),
+                    "sacred_guidance": sacred_guidance,
+                    "gentle_suggestions": gentle_suggestions,
+                    "overall_wisdom": overall_wisdom,
+                    "invitation": "These are gentle invitations, not requirements. Your temporal practice unfolds at its own perfect pace."
+                }
+            else:
+                logger.error(f"Backend missing signals failed: {response.status_code}")
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Failed to analyze missing temporal signals"
+                )
+                
+    except httpx.RequestError as e:
+        logger.error(f"Missing signals request failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Temporal analysis service unavailable"
+        )
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8001))
-    logger.info(f"🔧 Starting Journal Middleware on port {port}")
+    logger.info(f"🔧 Starting Journal Middleware with Temporal Awareness on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
