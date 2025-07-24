@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import logging
 import asyncio
+import re
 
 # Configure logging - Enhanced for Railway deployment monitoring
 # Version 2025-07-21: Added for consistent storage testing
@@ -195,6 +196,29 @@ async def save_entry(entry: EntryCreate):
                 data = response.json()
                 logger.info(f"Entry saved successfully for user {entry.user_id} with {data.get('tag_count', 0)} tags")
                 
+                # Parse and process any enhancement suggestions in the content
+                enhancements = parse_enhancements_from_content(entry.content, entry.user_id)
+                enhancement_count = 0
+                
+                if enhancements:
+                    logger.info(f"💡 Found {len(enhancements)} enhancement suggestions in entry")
+                    for enhancement in enhancements:
+                        try:
+                            # Send enhancement to proxy agent
+                            asyncio.create_task(log_enhancement_to_proxy(
+                                title=enhancement["title"],
+                                description=enhancement["description"],
+                                category=enhancement["category"],
+                                priority=enhancement["priority"],
+                                reasoning=enhancement["reasoning"],
+                                triggered_by=enhancement["triggered_by"],
+                                user_context=enhancement["user_context"]
+                            ))
+                            enhancement_count += 1
+                            logger.info(f"✨ Enhancement '{enhancement['title']}' queued for processing")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed to process enhancement: {e}")
+                
                 # Log to observer service (fire-and-forget)
                 response_time = (datetime.now() - start_time).total_seconds() * 1000
                 asyncio.create_task(log_to_observer(
@@ -205,13 +229,18 @@ async def save_entry(entry: EntryCreate):
                     metadata={
                         "tag_count": data.get("tag_count", 0),
                         "auto_tagged": entry.auto_tag,
-                        "manual_tags": len(entry.manual_tags) if entry.manual_tags else 0
+                        "manual_tags": len(entry.manual_tags) if entry.manual_tags else 0,
+                        "enhancement_count": enhancement_count
                     }
                 ))
                 
+                response_message = "Journal entry saved successfully"
+                if enhancement_count > 0:
+                    response_message += f" with {enhancement_count} enhancement{'s' if enhancement_count != 1 else ''} detected"
+                
                 return EntryResponse(
                     success=True,
-                    message="Journal entry saved successfully",
+                    message=response_message,
                     id=data.get("message_id"),
                     applied_tags=data.get("applied_tags", [])
                 )
@@ -1393,6 +1422,121 @@ async def test_enhancement():
             "message": "Test enhancement failed",
             "error": str(e)
         }
+
+# Enhancement parsing function for GPT responses
+def parse_enhancements_from_content(content: str, user_id: str) -> List[dict]:
+    """Parse enhancement suggestions from journal entry content"""
+    enhancements = []
+    
+    # Pattern 1: [ENHANCEMENT] block format
+    enhancement_pattern = r'\[ENHANCEMENT\](.*?)\[/ENHANCEMENT\]'
+    matches = re.findall(enhancement_pattern, content, re.DOTALL | re.IGNORECASE)
+    
+    for match in matches:
+        enhancement = parse_enhancement_block(match.strip(), user_id)
+        if enhancement:
+            enhancements.append(enhancement)
+    
+    # Pattern 2: Single line enhancement format
+    # [ENHANCEMENT: category] title - description
+    single_pattern = r'\[ENHANCEMENT:\s*(\w+)\]\s*([^-]+)\s*-\s*(.+)'
+    single_matches = re.findall(single_pattern, content, re.IGNORECASE)
+    
+    for category, title, description in single_matches:
+        enhancement = {
+            "title": title.strip(),
+            "description": description.strip(),
+            "category": category.strip().lower(),
+            "priority": "medium",  # Default priority
+            "reasoning": "User-suggested enhancement from journal entry",
+            "triggered_by": "gpt-journal-entry",
+            "user_context": {
+                "user_id": user_id,
+                "source": "journal_content",
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+        enhancements.append(enhancement)
+    
+    return enhancements
+
+def parse_enhancement_block(block_content: str, user_id: str) -> Optional[dict]:
+    """Parse a structured enhancement block"""
+    try:
+        enhancement = {
+            "title": "",
+            "description": "",
+            "category": "general",
+            "priority": "medium",
+            "reasoning": "",
+            "triggered_by": "gpt-journal-entry",
+            "user_context": {
+                "user_id": user_id,
+                "source": "journal_content",
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+        
+        # Parse key-value pairs
+        lines = block_content.strip().split('\n')
+        current_key = None
+        current_value = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            # Check for key: value format
+            if ':' in line and line.split(':')[0].lower() in ['title', 'description', 'category', 'priority', 'reasoning']:
+                # Save previous key-value
+                if current_key and current_value:
+                    enhancement[current_key] = ' '.join(current_value).strip()
+                
+                # Start new key-value
+                key, value = line.split(':', 1)
+                current_key = key.strip().lower()
+                current_value = [value.strip()] if value.strip() else []
+            else:
+                # Continue previous value
+                if current_key:
+                    current_value.append(line)
+        
+        # Save last key-value
+        if current_key and current_value:
+            enhancement[current_key] = ' '.join(current_value).strip()
+        
+        # Validate required fields
+        if not enhancement["title"] and not enhancement["description"]:
+            # Try simple format: first line is title, rest is description
+            lines = [l.strip() for l in block_content.strip().split('\n') if l.strip()]
+            if lines:
+                enhancement["title"] = lines[0]
+                if len(lines) > 1:
+                    enhancement["description"] = ' '.join(lines[1:])
+                else:
+                    enhancement["description"] = enhancement["title"]
+                enhancement["reasoning"] = "Enhancement suggested in journal entry"
+        
+        # Ensure we have at least a title
+        if not enhancement["title"]:
+            return None
+            
+        # Validate category
+        valid_categories = ['performance', 'usability', 'feature', 'bug', 'testing', 'general']
+        if enhancement["category"] not in valid_categories:
+            enhancement["category"] = "general"
+            
+        # Validate priority
+        valid_priorities = ['low', 'medium', 'high', 'critical']
+        if enhancement["priority"] not in valid_priorities:
+            enhancement["priority"] = "medium"
+        
+        return enhancement
+        
+    except Exception as e:
+        logger.warning(f"Failed to parse enhancement block: {e}")
+        return None
 
 # Helper function to log enhancement suggestions to proxy
 async def log_enhancement_to_proxy(title: str, description: str, category: str, 
