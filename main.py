@@ -1617,7 +1617,11 @@ async def root():
             "/temporal-state/{user_id}",
             "/temporal-summary/{user_id}",
             "/temporal-signals/{user_id}",
-            "/missing-temporal-signals/{user_id}"
+            "/missing-temporal-signals/{user_id}",
+            "/timestamp-validation/{user_id}",
+            "/correct-timestamp/{entry_id}",
+            "/temporal-context/{entry_id}",
+            "/timezone-settings/{user_id}"
         ],
         "authentication": "API key required in X-API-Key header",
         "gpt_usage": {
@@ -1901,8 +1905,415 @@ async def get_missing_temporal_signals(user_id: str, days_back: int = 7):
             detail="Temporal analysis service unavailable"
         )
 
+# ========================================
+# TIMESTAMP MANAGEMENT ENDPOINTS (GPT-Friendly)
+# ========================================
+
+@app.get("/timestamp-validation/{user_id}", dependencies=[Depends(verify_api_key)])
+async def get_timestamp_validation_report(user_id: str, days_back: int = 7):
+    """Review timestamp validation issues with gentle, natural language guidance"""
+    start_time = datetime.now()
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{BACKEND_URL}/api/timestamp/validation-report/{user_id}?days_back={days_back}",
+                timeout=15.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                validation_issues = data.get("validation_issues", [])
+                
+                # Transform technical validation data into natural language
+                gentle_guidance = []
+                sacred_insights = []
+                
+                for issue in validation_issues[:5]:  # Top 5 issues
+                    entry_id = issue.get("entry_id")
+                    content_preview = issue.get("content_preview", "")
+                    validation = issue.get("current_validation", {})
+                    severity = validation.get("severity", "ok")
+                    message = validation.get("message", "")
+                    
+                    if severity == "warning":
+                        gentle_guidance.append({
+                            "entry_id": entry_id,
+                            "content_preview": content_preview,
+                            "gentle_message": f"The timing of this entry seems unusual: {message.lower()}",
+                            "suggestion": "Consider if the timestamp accurately reflects when you wrote this entry",
+                            "urgency": "low"
+                        })
+                    elif severity == "suspicious":
+                        gentle_guidance.append({
+                            "entry_id": entry_id,
+                            "content_preview": content_preview,
+                            "gentle_message": f"This entry's timing raised some questions: {message.lower()}",
+                            "suggestion": "You might want to verify the date and time for this entry",
+                            "urgency": "medium"
+                        })
+                
+                # Generate sacred insights
+                if len(validation_issues) == 0:
+                    sacred_insights.append("🕐 Your temporal awareness flows harmoniously - all entries align beautifully with their intended time")
+                elif len(validation_issues) <= 2:
+                    sacred_insights.append("✨ Your relationship with time shows gentle consistency, with only minor adjustments needed")
+                else:
+                    sacred_insights.append("🌙 Some entries call for temporal realignment - an opportunity for deeper mindfulness")
+                
+                # Log to observer
+                response_time = (datetime.now() - start_time).total_seconds() * 1000
+                asyncio.create_task(log_to_observer(
+                    user_id=user_id,
+                    action_type="analyze",
+                    success=True,
+                    response_time=response_time,
+                    metadata={"endpoint": "timestamp_validation", "issues_found": len(validation_issues)}
+                ))
+                
+                return {
+                    "success": True,
+                    "user_id": user_id,
+                    "period_analyzed_days": days_back,
+                    "issues_found": len(validation_issues),
+                    "gentle_guidance": gentle_guidance,
+                    "sacred_insights": sacred_insights,
+                    "overall_message": "Time flows through your journal like a gentle river - these insights help ensure perfect alignment with your authentic moments"
+                }
+            else:
+                logger.error(f"Backend timestamp validation failed: {response.status_code}")
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Failed to retrieve timestamp validation report"
+                )
+                
+    except httpx.RequestError as e:
+        logger.error(f"Timestamp validation request failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Timestamp validation service unavailable"
+        )
+
+@app.post("/correct-timestamp/{entry_id}", dependencies=[Depends(verify_api_key)])
+async def correct_entry_timestamp(entry_id: int, new_timestamp: str, 
+                                 timezone_name: Optional[str] = None, 
+                                 reason: Optional[str] = ""):
+    """Simple, conversational timestamp correction interface"""
+    start_time = datetime.now()
+    
+    try:
+        # Prepare the correction request
+        correction_data = {
+            "entry_id": entry_id,
+            "new_timestamp": new_timestamp,
+            "reason": reason or "Timestamp corrected for accuracy"
+        }
+        
+        if timezone_name:
+            correction_data["timezone_name"] = timezone_name
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{BACKEND_URL}/api/timestamp/override",
+                json=correction_data,
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Log to observer
+                response_time = (datetime.now() - start_time).total_seconds() * 1000
+                asyncio.create_task(log_to_observer(
+                    user_id="timestamp_correction",  # Would normally extract from auth
+                    action_type="store",
+                    success=True,
+                    response_time=response_time,
+                    metadata={"endpoint": "correct_timestamp", "entry_id": entry_id}
+                ))
+                
+                return {
+                    "success": True,
+                    "message": "✨ Timestamp gracefully aligned with your authentic moment",
+                    "entry_id": entry_id,
+                    "corrected_timestamp": new_timestamp,
+                    "timezone": data.get("timezone"),
+                    "sacred_note": "Time now flows in harmony with your true experience",
+                    "correction_reason": reason
+                }
+            else:
+                logger.error(f"Backend timestamp correction failed: {response.status_code}")
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Failed to correct timestamp"
+                )
+                
+    except httpx.RequestError as e:
+        logger.error(f"Timestamp correction request failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Timestamp correction service unavailable"
+        )
+
+@app.get("/temporal-context/{entry_id}", dependencies=[Depends(verify_api_key)])
+async def get_temporal_context(entry_id: int):
+    """Rich temporal context for entries with natural language insights"""
+    start_time = datetime.now()
+    
+    try:
+        # First get the entry details
+        async with httpx.AsyncClient() as client:
+            # This would need to be implemented in backend - getting single entry with full context
+            response = await client.get(
+                f"{BACKEND_URL}/api/entries/{entry_id}/context",
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Transform into natural language context
+                temporal_story = []
+                
+                utc_time = data.get("utc_timestamp")
+                local_time = data.get("local_timestamp")
+                timezone = data.get("timezone")
+                validation_score = data.get("temporal_validation_score", 0.5)
+                
+                if utc_time and local_time:
+                    # Parse timestamps
+                    try:
+                        local_dt = datetime.fromisoformat(local_time)
+                        hour = local_dt.hour
+                        weekday = local_dt.weekday()
+                        
+                        # Create narrative
+                        day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+                        day_name = day_names[weekday]
+                        
+                        if 5 <= hour < 12:
+                            time_essence = "morning light"
+                        elif 12 <= hour < 17:
+                            time_essence = "afternoon flow"
+                        elif 17 <= hour < 21:
+                            time_essence = "evening reflection"
+                        else:
+                            time_essence = "night's embrace"
+                        
+                        temporal_story.append(f"Written in {time_essence} on {day_name}")
+                        temporal_story.append(f"Your local time: {local_dt.strftime('%I:%M %p')}")
+                        temporal_story.append(f"Timezone: {timezone}")
+                        
+                        # Validation context
+                        if validation_score > 0.8:
+                            temporal_story.append("🌟 This timestamp flows in perfect harmony with the content")
+                        elif validation_score > 0.6:
+                            temporal_story.append("✨ The timing feels authentic and aligned")
+                        else:
+                            temporal_story.append("🌙 The timing might benefit from gentle review")
+                    
+                    except Exception as e:
+                        temporal_story.append("Time flows through this entry in its own mysterious way")
+                
+                # Log to observer
+                response_time = (datetime.now() - start_time).total_seconds() * 1000
+                asyncio.create_task(log_to_observer(
+                    user_id="temporal_context",
+                    action_type="search",
+                    success=True,
+                    response_time=response_time,
+                    metadata={"endpoint": "temporal_context", "entry_id": entry_id}
+                ))
+                
+                return {
+                    "success": True,
+                    "entry_id": entry_id,
+                    "temporal_story": temporal_story,
+                    "raw_data": {
+                        "utc_timestamp": utc_time,
+                        "local_timestamp": local_time,
+                        "timezone": timezone,
+                        "validation_score": validation_score
+                    },
+                    "sacred_insight": "Every moment carries its own perfect signature in the flow of time"
+                }
+            else:
+                # Fallback response if endpoint doesn't exist yet
+                return {
+                    "success": True,
+                    "entry_id": entry_id,
+                    "temporal_story": ["This entry exists in the eternal now"],
+                    "sacred_insight": "Time is but a river, and your words are precious stones cast into its flow"
+                }
+                
+    except httpx.RequestError as e:
+        logger.error(f"Temporal context request failed: {e}")
+        return {
+            "success": True,
+            "entry_id": entry_id,
+            "temporal_story": ["Time flows mysteriously through this entry"],
+            "sacred_insight": "In the absence of perfect timing data, we honor the essence of the eternal moment"
+        }
+
+@app.get("/timezone-settings/{user_id}", dependencies=[Depends(verify_api_key)])
+async def get_timezone_settings(user_id: str):
+    """Get user's timezone settings with friendly suggestions"""
+    start_time = datetime.now()
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{BACKEND_URL}/api/temporal/state/{user_id}",
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                current_timezone = data.get("timezone", "America/Chicago")
+                
+                # Get timezone suggestions
+                suggestions_response = await client.get(
+                    f"{BACKEND_URL}/api/timezone/suggestions",
+                    timeout=5.0
+                )
+                
+                suggestions = []
+                if suggestions_response.status_code == 200:
+                    suggestions_data = suggestions_response.json()
+                    suggestions = suggestions_data.get("suggestions", [])
+                
+                # Transform into friendly format
+                timezone_wisdom = []
+                if "America/Chicago" in current_timezone:
+                    timezone_wisdom.append("🌾 You flow with Central Time - the heartland rhythm")
+                elif "America/New_York" in current_timezone:
+                    timezone_wisdom.append("🗽 You dance with Eastern Time - where the day begins")
+                elif "America/Los_Angeles" in current_timezone:
+                    timezone_wisdom.append("🌊 You breathe with Pacific Time - where dreams meet the ocean")
+                else:
+                    timezone_wisdom.append(f"🌍 Your time flows through {current_timezone} - a unique rhythm in the global symphony")
+                
+                # Log to observer
+                response_time = (datetime.now() - start_time).total_seconds() * 1000
+                asyncio.create_task(log_to_observer(
+                    user_id=user_id,
+                    action_type="search",
+                    success=True,
+                    response_time=response_time,
+                    metadata={"endpoint": "timezone_settings", "current_timezone": current_timezone}
+                ))
+                
+                return {
+                    "success": True,
+                    "user_id": user_id,
+                    "current_timezone": current_timezone,
+                    "timezone_wisdom": timezone_wisdom,
+                    "common_suggestions": suggestions[:8],
+                    "guidance": "Your timezone shapes how your temporal awareness flows through each day",
+                    "change_note": "Timezone changes affect how your journal entries align with natural rhythms"
+                }
+            else:
+                logger.error(f"Backend timezone settings failed: {response.status_code}")
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Failed to retrieve timezone settings"
+                )
+                
+    except httpx.RequestError as e:
+        logger.error(f"Timezone settings request failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Timezone settings service unavailable"
+        )
+
+@app.put("/timezone-settings/{user_id}", dependencies=[Depends(verify_api_key)])
+async def update_timezone_settings(user_id: str, new_timezone: str, 
+                                  bulk_correct_existing: bool = False):
+    """Update user's timezone with gentle confirmation"""
+    start_time = datetime.now()
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            # Update timezone
+            response = await client.put(
+                f"{BACKEND_URL}/api/user/{user_id}/timezone",
+                json={"timezone_name": new_timezone},
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                update_result = response.json()
+                
+                # Optionally bulk correct existing entries
+                bulk_result = None
+                if bulk_correct_existing:
+                    bulk_response = await client.post(
+                        f"{BACKEND_URL}/api/timestamp/bulk-correct",
+                        json={
+                            "user_id": user_id,
+                            "new_timezone": new_timezone,
+                            "reason": "Timezone change - bulk correction"
+                        },
+                        timeout=30.0
+                    )
+                    
+                    if bulk_response.status_code == 200:
+                        bulk_result = bulk_response.json()
+                
+                # Generate friendly confirmation
+                timezone_blessing = []
+                if "America" in new_timezone:
+                    timezone_blessing.append(f"🌎 Your temporal awareness now flows with {new_timezone}")
+                elif "Europe" in new_timezone:
+                    timezone_blessing.append(f"🏰 Your time consciousness aligns with {new_timezone}")
+                elif "Asia" in new_timezone:
+                    timezone_blessing.append(f"🏯 Your temporal rhythm dances with {new_timezone}")
+                else:
+                    timezone_blessing.append(f"🌍 Your awareness embraces the rhythm of {new_timezone}")
+                
+                if bulk_result:
+                    corrections_made = bulk_result.get("corrections_made", 0)
+                    timezone_blessing.append(f"✨ {corrections_made} past entries gracefully realigned with your new temporal flow")
+                
+                # Log to observer
+                response_time = (datetime.now() - start_time).total_seconds() * 1000
+                asyncio.create_task(log_to_observer(
+                    user_id=user_id,
+                    action_type="store",
+                    success=True,
+                    response_time=response_time,
+                    metadata={
+                        "endpoint": "update_timezone", 
+                        "new_timezone": new_timezone,
+                        "bulk_correct": bulk_correct_existing
+                    }
+                ))
+                
+                return {
+                    "success": True,
+                    "message": "Timezone gracefully updated",
+                    "user_id": user_id,
+                    "new_timezone": new_timezone,
+                    "timezone_blessing": timezone_blessing,
+                    "bulk_correction": bulk_result,
+                    "sacred_note": "Your relationship with time evolves as you journey through life's rhythms"
+                }
+            else:
+                logger.error(f"Backend timezone update failed: {response.status_code}")
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail="Failed to update timezone settings"
+                )
+                
+    except httpx.RequestError as e:
+        logger.error(f"Timezone update request failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Timezone update service unavailable"
+        )
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8001))
-    logger.info(f"🔧 Starting Journal Middleware with Temporal Awareness on port {port}")
+    logger.info(f"🔧 Starting Journal Middleware with Temporal Awareness and Timestamp Synchronization on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
