@@ -1,21 +1,358 @@
 import os
 import httpx
-from datetime import datetime
-from typing import List, Optional
+from datetime import datetime, timedelta
+from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 import logging
 import asyncio
 import re
+import hashlib
+import json
+from functools import wraps
+import time
+from collections import defaultdict, deque
+import uuid
 
 # Configure logging - Enhanced for Railway deployment monitoring
 # Version 2025-07-21: Added for consistent storage testing
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ===== PERFORMANCE OPTIMIZATION LAYER =====
+
+class ResponseCache:
+    """In-memory response cache with TTL and size limits"""
+    def __init__(self, max_size: int = 1000, default_ttl: int = 300):
+        self.cache: Dict[str, Dict[str, Any]] = {}
+        self.max_size = max_size
+        self.default_ttl = default_ttl
+        
+    def _generate_key(self, endpoint: str, params: Dict[str, Any]) -> str:
+        """Generate cache key from endpoint and parameters"""
+        params_str = json.dumps(params, sort_keys=True)
+        return hashlib.md5(f"{endpoint}:{params_str}".encode()).hexdigest()
+    
+    def get(self, endpoint: str, params: Dict[str, Any]) -> Optional[Any]:
+        """Get cached response if valid"""
+        key = self._generate_key(endpoint, params)
+        if key in self.cache:
+            cached = self.cache[key]
+            if cached['expires'] > time.time():
+                logger.info(f"📊 Cache HIT: {endpoint}")
+                return cached['data']
+            else:
+                # Expired
+                del self.cache[key]
+                logger.info(f"📊 Cache EXPIRED: {endpoint}")
+        return None
+    
+    def set(self, endpoint: str, params: Dict[str, Any], data: Any, ttl: Optional[int] = None) -> None:
+        """Cache response with TTL"""
+        if len(self.cache) >= self.max_size:
+            # Remove oldest entries
+            oldest_keys = sorted(self.cache.keys(), key=lambda k: self.cache[k]['created'])[:10]
+            for old_key in oldest_keys:
+                del self.cache[old_key]
+        
+        key = self._generate_key(endpoint, params)
+        ttl = ttl or self.default_ttl
+        self.cache[key] = {
+            'data': data,
+            'created': time.time(),
+            'expires': time.time() + ttl
+        }
+        logger.info(f"📊 Cache SET: {endpoint} (TTL: {ttl}s)")
+    
+    def invalidate_pattern(self, pattern: str) -> None:
+        """Invalidate cache entries matching pattern"""
+        keys_to_remove = [k for k in self.cache.keys() if pattern in k]
+        for key in keys_to_remove:
+            del self.cache[key]
+        logger.info(f"📊 Cache INVALIDATED: {len(keys_to_remove)} entries matching '{pattern}'")
+
+class CircuitBreaker:
+    """Circuit breaker for external service calls"""
+    def __init__(self, failure_threshold: int = 5, recovery_timeout: int = 60):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.failure_count = 0
+        self.last_failure_time = None
+        self.state = "closed"  # closed, open, half-open
+    
+    def call(self, func):
+        """Decorator for circuit breaker functionality"""
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            if self.state == "open":
+                if time.time() - self.last_failure_time > self.recovery_timeout:
+                    self.state = "half-open"
+                    logger.info(f"🔄 Circuit breaker HALF-OPEN for {func.__name__}")
+                else:
+                    raise HTTPException(
+                        status_code=503, 
+                        detail=f"Circuit breaker OPEN for {func.__name__}"
+                    )
+            
+            try:
+                result = await func(*args, **kwargs)
+                if self.state == "half-open":
+                    self.state = "closed"
+                    self.failure_count = 0
+                    logger.info(f"✅ Circuit breaker CLOSED for {func.__name__}")
+                return result
+            except Exception as e:
+                self.failure_count += 1
+                self.last_failure_time = time.time()
+                
+                if self.failure_count >= self.failure_threshold:
+                    self.state = "open" 
+                    logger.error(f"🚨 Circuit breaker OPEN for {func.__name__} after {self.failure_count} failures")
+                
+                raise e
+        return wrapper
+
+class OptimizedHTTPClient:
+    """HTTP client with connection pooling and retry logic"""
+    def __init__(self):
+        # Connection pool limits
+        limits = httpx.Limits(
+            max_keepalive_connections=20,
+            max_connections=50,
+            keepalive_expiry=30.0
+        )
+        
+        # Timeout configuration
+        timeout = httpx.Timeout(
+            connect=5.0,
+            read=10.0,
+            write=5.0,
+            pool=5.0
+        )
+        
+        self.client = httpx.AsyncClient(
+            limits=limits,
+            timeout=timeout,
+            headers={"User-Agent": "Journal-Middleware/2.0"}
+        )
+        
+        self.retry_config = {
+            "max_retries": 3,
+            "backoff_factor": 1.0,
+            "status_forcelist": [429, 500, 502, 503, 504]
+        }
+    
+    async def request_with_retry(self, method: str, url: str, **kwargs) -> httpx.Response:
+        """Make HTTP request with exponential backoff retry"""
+        last_exception = None
+        
+        for attempt in range(self.retry_config["max_retries"] + 1):
+            try:
+                response = await self.client.request(method, url, **kwargs)
+                
+                if response.status_code not in self.retry_config["status_forcelist"]:
+                    return response
+                    
+                if attempt == self.retry_config["max_retries"]:
+                    return response
+                    
+                # Exponential backoff
+                wait_time = self.retry_config["backoff_factor"] * (2 ** attempt)
+                logger.warning(f"🔄 Retrying {method} {url} in {wait_time}s (attempt {attempt + 1})")
+                await asyncio.sleep(wait_time)
+                
+            except (httpx.ConnectError, httpx.TimeoutException) as e:
+                last_exception = e
+                if attempt == self.retry_config["max_retries"]:
+                    raise e
+                
+                wait_time = self.retry_config["backoff_factor"] * (2 ** attempt)
+                logger.warning(f"🔄 Connection retry {method} {url} in {wait_time}s (attempt {attempt + 1})")
+                await asyncio.sleep(wait_time)
+        
+        if last_exception:
+            raise last_exception
+    
+    async def close(self):
+        """Close the HTTP client"""
+        await self.client.aclose()
+
+class PerformanceMonitor:
+    """Performance monitoring and metrics collection"""
+    def __init__(self):
+        self.request_times = defaultdict(list)
+        self.error_counts = defaultdict(int)
+        self.cache_stats = {"hits": 0, "misses": 0, "sets": 0}
+    
+    def record_request_time(self, endpoint: str, duration: float):
+        """Record request duration"""
+        self.request_times[endpoint].append(duration)
+        # Keep only last 100 measurements per endpoint
+        if len(self.request_times[endpoint]) > 100:
+            self.request_times[endpoint] = self.request_times[endpoint][-100:]
+    
+    def record_error(self, endpoint: str):
+        """Record error occurrence"""
+        self.error_counts[endpoint] += 1
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get performance statistics"""
+        stats = {}
+        for endpoint, times in self.request_times.items():
+            if times:
+                stats[endpoint] = {
+                    "avg_response_time": round(sum(times) / len(times), 3),
+                    "min_response_time": round(min(times), 3),
+                    "max_response_time": round(max(times), 3),
+                    "request_count": len(times),
+                    "error_count": self.error_counts.get(endpoint, 0)
+                }
+        return {
+            "endpoint_stats": stats,
+            "cache_stats": self.cache_stats
+        }
+
+class AsyncJobQueue:
+    """Simple async job queue for background processing"""
+    def __init__(self, max_workers: int = 3):
+        self.queue = deque()
+        self.running_jobs = {}
+        self.completed_jobs = {}
+        self.max_workers = max_workers
+        self.workers_started = False
+        
+    async def enqueue(self, job_func, *args, **kwargs) -> str:
+        """Enqueue a job for background processing"""
+        job_id = str(uuid.uuid4())
+        job = {
+            "id": job_id,
+            "func": job_func,
+            "args": args,
+            "kwargs": kwargs,
+            "created_at": time.time(),
+            "status": "queued"
+        }
+        
+        self.queue.append(job)
+        logger.info(f"🔄 Job {job_id} queued: {job_func.__name__}")
+        
+        # Start workers if not already started
+        if not self.workers_started:
+            asyncio.create_task(self._start_workers())
+            self.workers_started = True
+            
+        return job_id
+    
+    async def _start_workers(self):
+        """Start background workers"""
+        for i in range(self.max_workers):
+            asyncio.create_task(self._worker(f"worker-{i}"))
+    
+    async def _worker(self, worker_name: str):
+        """Background worker to process jobs"""
+        logger.info(f"🔧 Starting worker: {worker_name}")
+        
+        while True:
+            try:
+                if self.queue:
+                    job = self.queue.popleft()
+                    job_id = job["id"]
+                    
+                    self.running_jobs[job_id] = {
+                        **job,
+                        "status": "running",
+                        "started_at": time.time(),
+                        "worker": worker_name
+                    }
+                    
+                    logger.info(f"🔧 {worker_name} processing job {job_id}: {job['func'].__name__}")
+                    
+                    try:
+                        # Execute the job
+                        if asyncio.iscoroutinefunction(job["func"]):
+                            result = await job["func"](*job["args"], **job["kwargs"])
+                        else:
+                            result = job["func"](*job["args"], **job["kwargs"])
+                        
+                        # Mark as completed
+                        self.completed_jobs[job_id] = {
+                            **self.running_jobs[job_id],
+                            "status": "completed",
+                            "completed_at": time.time(),
+                            "result": result
+                        }
+                        
+                        logger.info(f"✅ {worker_name} completed job {job_id}")
+                        
+                    except Exception as e:
+                        # Mark as failed
+                        self.completed_jobs[job_id] = {
+                            **self.running_jobs[job_id],
+                            "status": "failed",
+                            "completed_at": time.time(),
+                            "error": str(e)
+                        }
+                        
+                        logger.error(f"❌ {worker_name} failed job {job_id}: {e}")
+                    
+                    finally:
+                        # Remove from running jobs
+                        if job_id in self.running_jobs:
+                            del self.running_jobs[job_id]
+                        
+                        # Clean up old completed jobs (keep last 100)
+                        if len(self.completed_jobs) > 100:
+                            oldest_jobs = sorted(self.completed_jobs.items(), key=lambda x: x[1]["completed_at"])[:20]
+                            for old_job_id, _ in oldest_jobs:
+                                del self.completed_jobs[old_job_id]
+                else:
+                    # No jobs, wait a bit
+                    await asyncio.sleep(1)
+                    
+            except Exception as e:
+                logger.error(f"❌ Worker {worker_name} error: {e}")
+                await asyncio.sleep(5)
+    
+    def get_job_status(self, job_id: str) -> Optional[dict]:
+        """Get status of a job"""
+        if job_id in self.running_jobs:
+            return self.running_jobs[job_id]
+        elif job_id in self.completed_jobs:
+            return self.completed_jobs[job_id]
+        else:
+            # Check if still in queue
+            for job in self.queue:
+                if job["id"] == job_id:
+                    return job
+            return None
+    
+    def get_queue_stats(self) -> dict:
+        """Get queue statistics"""
+        return {
+            "queued_jobs": len(self.queue),
+            "running_jobs": len(self.running_jobs),
+            "completed_jobs": len(self.completed_jobs),
+            "total_workers": self.max_workers
+        }
+
+# Initialize optimization components
+response_cache = ResponseCache(max_size=1000, default_ttl=300)  # 5 minutes default TTL
+circuit_breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
+http_client = OptimizedHTTPClient()
+performance_monitor = PerformanceMonitor()
+job_queue = AsyncJobQueue(max_workers=3)
+
 # FastAPI app
-app = FastAPI(title="Journal Middleware API with Tags")
+app = FastAPI(
+    title="Journal Middleware API with Performance Optimization",
+    description="Optimized middleware with caching, connection pooling, and circuit breakers",
+    version="2.0.0"
+)
+
+# Add compression middleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # CORS configuration
 app.add_middleware(
@@ -65,11 +402,12 @@ async def verify_api_key(x_api_key: str = Header(...)):
         raise HTTPException(status_code=401, detail="Invalid API key")
     return x_api_key
 
-# Fire-and-forget observer logging function
+# Optimized observer logging with circuit breaker and caching
+@circuit_breaker.call
 async def log_to_observer(user_id: str, action_type: str, success: bool = True, 
                          response_time: Optional[float] = None, error_message: Optional[str] = None,
                          metadata: Optional[dict] = None):
-    """Fire-and-forget logging to observer service"""
+    """Fire-and-forget logging to observer service with optimization"""
     if not OBSERVER_ENABLED:
         logger.info(f"🔕 Observer disabled - skipping log for {action_type}")
         return
@@ -77,25 +415,85 @@ async def log_to_observer(user_id: str, action_type: str, success: bool = True,
     logger.info(f"📤 Attempting to log to observer: {action_type} for user {user_id}")
     
     try:
-        async with httpx.AsyncClient(timeout=1.0) as client:
-            response = await client.post(
-                f"{OBSERVER_URL}/observe",
-                json={
-                    "user_id": user_id,
-                    "action_type": action_type,
-                    "success": success,
-                    "response_time": response_time,
-                    "error_message": error_message,
-                    "metadata": metadata
-                }
-            )
-            logger.info(f"✅ Observer log successful: {response.status_code}")
-    except httpx.ConnectError as e:
-        logger.warning(f"🔌 Observer connection failed: {OBSERVER_URL} - {str(e)}")
-    except httpx.TimeoutException as e:
-        logger.warning(f"⏱️ Observer timeout: {OBSERVER_URL}")
+        response = await http_client.request_with_retry(
+            "POST",
+            f"{OBSERVER_URL}/observe",
+            json={
+                "user_id": user_id,
+                "action_type": action_type,
+                "success": success,
+                "response_time": response_time,
+                "error_message": error_message,
+                "metadata": metadata
+            }
+        )
+        logger.info(f"✅ Observer log successful: {response.status_code}")
     except Exception as e:
         logger.warning(f"❌ Observer logging failed: {type(e).__name__}: {str(e)}")
+        performance_monitor.record_error("log_to_observer")
+
+# Performance monitoring decorator
+def monitor_performance(endpoint_name: str, cache_ttl: Optional[int] = None):
+    """Decorator to monitor endpoint performance and optionally cache responses"""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            start_time = time.time()
+            
+            # Check cache if enabled
+            if cache_ttl:
+                cache_params = {"args": args, "kwargs": kwargs}
+                cached_response = response_cache.get(endpoint_name, cache_params)
+                if cached_response:
+                    performance_monitor.cache_stats["hits"] += 1
+                    return cached_response
+                performance_monitor.cache_stats["misses"] += 1
+            
+            try:
+                result = await func(*args, **kwargs)
+                duration = time.time() - start_time
+                performance_monitor.record_request_time(endpoint_name, duration)
+                
+                # Cache successful responses
+                if cache_ttl and hasattr(result, 'get') and result.get('success'):
+                    cache_params = {"args": args, "kwargs": kwargs}
+                    response_cache.set(endpoint_name, cache_params, result, cache_ttl)
+                    performance_monitor.cache_stats["sets"] += 1
+                
+                logger.info(f"⚡ {endpoint_name} completed in {duration:.3f}s")
+                return result
+                
+            except Exception as e:
+                duration = time.time() - start_time
+                performance_monitor.record_request_time(endpoint_name, duration)
+                performance_monitor.record_error(endpoint_name)
+                logger.error(f"❌ {endpoint_name} failed in {duration:.3f}s: {e}")
+                raise e
+        return wrapper
+    return decorator
+
+# Optimized backend request function
+async def make_backend_request(method: str, endpoint: str, **kwargs) -> dict:
+    """Make optimized request to backend with retry logic and monitoring"""
+    url = f"{BACKEND_URL}{endpoint}"
+    
+    try:
+        response = await http_client.request_with_retry(method, url, **kwargs)
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.error(f"Backend returned error: {response.status_code}")
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"Backend error: {response.status_code}"
+            )
+    except httpx.RequestError as e:
+        logger.error(f"Request to backend failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Backend service unavailable. Please try again later."
+        )
 
 @app.get("/test-observer")
 async def test_observer():
@@ -130,26 +528,28 @@ async def test_observer():
 
 @app.get("/health")
 async def health_check():
-    """Check middleware health and backend connectivity"""
+    """Check middleware health and backend connectivity with performance metrics"""
     try:
-        # Test backend connection
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"{BACKEND_URL}/health", timeout=5.0)
-            backend_health = response.json()
+        # Test backend connection with optimized client
+        response = await http_client.request_with_retry("GET", f"{BACKEND_URL}/health")
+        backend_health = response.json()
         
         # Test observer connection if enabled
         observer_status = "disabled"
         if OBSERVER_ENABLED:
             try:
-                async with httpx.AsyncClient() as client:
-                    obs_response = await client.get(f"{OBSERVER_URL}/", timeout=2.0)
-                    observer_status = "connected" if obs_response.status_code == 200 else "unreachable"
+                obs_response = await http_client.request_with_retry("GET", f"{OBSERVER_URL}/")
+                observer_status = "connected" if obs_response.status_code == 200 else "unreachable"
             except:
                 observer_status = "unreachable"
+        
+        # Get performance stats
+        perf_stats = performance_monitor.get_stats()
         
         return {
             "status": "healthy",
             "service": "middleware",
+            "version": "2.0.0",
             "backend": backend_health.get("status", "unknown"),
             "backend_url": BACKEND_URL,
             "observer": {
@@ -158,6 +558,13 @@ async def health_check():
                 "enabled": OBSERVER_ENABLED
             },
             "features": backend_health.get("features", []),
+            "performance": perf_stats,
+            "optimizations": {
+                "caching_enabled": True,
+                "connection_pooling": True,
+                "circuit_breaker": circuit_breaker.state,
+                "compression": True
+            },
             "timestamp": datetime.utcnow()
         }
     except Exception as e:
@@ -175,26 +582,75 @@ async def health_check():
             "timestamp": datetime.utcnow()
         }
 
+@app.get("/performance-stats")
+async def get_performance_stats():
+    """Get detailed performance statistics"""
+    return {
+        "performance_stats": performance_monitor.get_stats(),
+        "cache_info": {
+            "cache_size": len(response_cache.cache),
+            "max_cache_size": response_cache.max_size,
+            "default_ttl": response_cache.default_ttl
+        },
+        "circuit_breaker_state": circuit_breaker.state,
+        "http_client_info": {
+            "max_connections": 50,
+            "max_keepalive": 20,
+            "keepalive_expiry": 30.0
+        },
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+@app.post("/clear-cache")
+async def clear_cache(pattern: Optional[str] = None):
+    """Clear cache entries (optionally by pattern)"""
+    if pattern:
+        response_cache.invalidate_pattern(pattern)
+        return {"message": f"Cache cleared for pattern: {pattern}"}
+    else:
+        response_cache.cache.clear()
+        return {"message": "All cache cleared"}
+
+@app.get("/job-queue-stats")
+async def get_job_queue_stats():
+    """Get job queue statistics"""
+    return {
+        "queue_stats": job_queue.get_queue_stats(),
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+@app.get("/job/{job_id}")
+async def get_job_status(job_id: str):
+    """Get status of a specific background job"""
+    job_status = job_queue.get_job_status(job_id)
+    if job_status:
+        return job_status
+    else:
+        raise HTTPException(status_code=404, detail="Job not found")
+
 @app.post("/save-entry", response_model=EntryResponse, dependencies=[Depends(verify_api_key)])
+@monitor_performance("save_entry")
 async def save_entry(entry: EntryCreate):
     """Save a journal entry with tag support via the backend API"""
     start_time = datetime.now()
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{BACKEND_URL}/api/save",
-                json={
-                    "content": entry.content,
-                    "user_id": entry.user_id,
-                    "manual_tags": entry.manual_tags,
-                    "auto_tag": entry.auto_tag
-                },
-                timeout=10.0
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                logger.info(f"Entry saved successfully for user {entry.user_id} with {data.get('tag_count', 0)} tags")
+        # Invalidate related caches when new entry is saved
+        response_cache.invalidate_pattern(f"get_entries_{entry.user_id}")
+        response_cache.invalidate_pattern(f"get_daily_summary_{entry.user_id}")
+        response_cache.invalidate_pattern("get_tags")
+        
+        data = await make_backend_request(
+            "POST",
+            "/api/save",
+            json={
+                "content": entry.content,
+                "user_id": entry.user_id,
+                "manual_tags": entry.manual_tags,
+                "auto_tag": entry.auto_tag
+            }
+        )
+        
+        logger.info(f"Entry saved successfully for user {entry.user_id} with {data.get('tag_count', 0)} tags")
                 
                 # Parse and process any enhancement suggestions in the content
                 enhancements = parse_enhancements_from_content(entry.content, entry.user_id)
@@ -298,26 +754,28 @@ async def save_entry(entry: EntryCreate):
         )
 
 @app.get("/get-entries/{user_id}", dependencies=[Depends(verify_api_key)])
+@monitor_performance("get_entries", cache_ttl=120)  # Cache for 2 minutes
 async def get_entries(user_id: str, limit: Optional[int] = 50, offset: Optional[int] = 0, tags: Optional[str] = None):
     """Retrieve journal entries for a user with optional tag filtering"""
     start_time = datetime.now()
     action_type = "search" if tags else "recall"
     
     try:
-        async with httpx.AsyncClient() as client:
-            params = {"limit": limit, "offset": offset}
-            if tags:
-                params["tags"] = tags
-                
-            response = await client.get(
-                f"{BACKEND_URL}/api/messages/{user_id}",
-                params=params,
-                timeout=10.0
-            )
+        params = {"limit": limit, "offset": offset}
+        if tags:
+            params["tags"] = tags
             
-            if response.status_code == 200:
-                data = response.json()
-                messages = data.get("messages", [])
+        # Use optimized backend request
+        endpoint = f"/api/messages/{user_id}"
+        response = await http_client.request_with_retry(
+            "GET",
+            f"{BACKEND_URL}{endpoint}",
+            params=params
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            messages = data.get("messages", [])
                 logger.info(f"Retrieved {len(messages)} entries for user {user_id}")
                 
                 # Log to observer service (fire-and-forget)
@@ -379,22 +837,13 @@ async def get_entries_by_tags(user_id: str, tag_names: str, limit: Optional[int]
     return await get_entries(user_id, limit, offset, tag_names)
 
 @app.get("/get-tags", dependencies=[Depends(verify_api_key)])
+@monitor_performance("get_tags", cache_ttl=600)  # Cache for 10 minutes
 async def get_all_tags():
     """Get all available tags"""
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"{BACKEND_URL}/api/tags", timeout=10.0)
-            
-            if response.status_code == 200:
-                data = response.json()
-                logger.info(f"Retrieved {data.get('count', 0)} tags")
-                return data
-            else:
-                logger.error(f"Backend returned error: {response.status_code}")
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail="Failed to retrieve tags from backend"
-                )
+        data = await make_backend_request("GET", "/api/tags")
+        logger.info(f"Retrieved {data.get('count', 0)} tags")
+        return data
                 
     except httpx.RequestError as e:
         logger.error(f"Request to backend failed: {e}")
@@ -1646,14 +2095,37 @@ async def root():
 
 @app.on_event("startup")
 async def startup_event():
-    """Log startup information"""
-    logger.info("🚀 Journal Middleware starting up...")
+    """Log startup information and initialize optimization components"""
+    logger.info("🚀 Journal Middleware starting up with performance optimizations...")
     logger.info(f"📡 Backend URL: {BACKEND_URL}")
     logger.info(f"🔍 Observer URL: {OBSERVER_URL}")
     logger.info(f"🔔 Observer Enabled: {OBSERVER_ENABLED}")
     logger.info(f"🔑 API Key configured: {'Yes' if API_KEY != 'your-secret-api-key' else 'No (using default)'}")
     logger.info(f"📍 Service will listen on port: {os.environ.get('PORT', 8001)}")
-    logger.info("✅ Ready to handle requests")
+    
+    # Initialize optimization components
+    logger.info("🎯 Initializing performance optimizations:")
+    logger.info(f"  📊 Response cache: {response_cache.max_size} entries, {response_cache.default_ttl}s TTL")
+    logger.info(f"  🔄 Circuit breaker: {circuit_breaker.failure_threshold} failure threshold")
+    logger.info(f"  🔗 HTTP client: {50} max connections, {20} keepalive")
+    logger.info(f"  🔧 Job queue: {job_queue.max_workers} workers")
+    logger.info(f"  🗜️ Compression: GZip enabled")
+    
+    logger.info("✅ Ready to handle requests with enhanced performance")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup resources on shutdown"""
+    logger.info("🛑 Journal Middleware shutting down...")
+    
+    try:
+        # Close HTTP client
+        await http_client.close()
+        logger.info("✅ HTTP client closed")
+    except Exception as e:
+        logger.error(f"❌ Error closing HTTP client: {e}")
+    
+    logger.info("✅ Shutdown complete")
 
 # ========================================
 # TEMPORAL AWARENESS ENDPOINTS (GPT-Friendly)
