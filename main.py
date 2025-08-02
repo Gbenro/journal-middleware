@@ -533,7 +533,7 @@ async def health_check():
         "status": "healthy",
         "service": "middleware",
         "version": "2.0.0",
-        "timestamp": datetime.utcnow()
+        "timestamp": datetime.utcnow().isoformat()
     }
 
 @app.get("/health/detailed")
@@ -575,7 +575,7 @@ async def detailed_health_check():
                 "circuit_breaker": circuit_breaker.state,
                 "compression": True
             },
-            "timestamp": datetime.utcnow()
+            "timestamp": datetime.utcnow().isoformat()
         }
     except Exception as e:
         logger.error(f"Detailed health check failed: {e}")
@@ -589,7 +589,7 @@ async def detailed_health_check():
                 "enabled": OBSERVER_ENABLED
             },
             "error": str(e),
-            "timestamp": datetime.utcnow()
+            "timestamp": datetime.utcnow().isoformat()
         }
 
 @app.get("/performance-stats")
@@ -751,47 +751,47 @@ async def get_entries(user_id: str, limit: Optional[int] = 50, offset: Optional[
         if response.status_code == 200:
             data = response.json()
             messages = data.get("messages", [])
-                logger.info(f"Retrieved {len(messages)} entries for user {user_id}")
-                
-                # Log to observer service (fire-and-forget)
-                response_time = (datetime.now() - start_time).total_seconds() * 1000
-                asyncio.create_task(log_to_observer(
-                    user_id=user_id,
-                    action_type=action_type,
-                    success=True,
-                    response_time=response_time,
-                    metadata={
-                        "entry_count": len(messages),
-                        "limit": limit,
-                        "offset": offset,
-                        "tags_filter": tags if tags else None
-                    }
-                ))
-                
-                # Return in a clean format for GPT
-                return {
-                    "success": True,
-                    "entries": messages,
-                    "count": len(messages),
-                    "filtered_by_tags": data.get("filtered_by_tags")
+            logger.info(f"Retrieved {len(messages)} entries for user {user_id}")
+            
+            # Log to observer service (fire-and-forget)
+            response_time = (datetime.now() - start_time).total_seconds() * 1000
+            asyncio.create_task(log_to_observer(
+                user_id=user_id,
+                action_type=action_type,
+                success=True,
+                response_time=response_time,
+                metadata={
+                    "entry_count": len(messages),
+                    "limit": limit,
+                    "offset": offset,
+                    "tags_filter": tags if tags else None
                 }
-            else:
-                logger.error(f"Backend returned error: {response.status_code}")
-                
-                # Log failure to observer
-                response_time = (datetime.now() - start_time).total_seconds() * 1000
-                asyncio.create_task(log_to_observer(
-                    user_id=user_id,
-                    action_type=action_type,
-                    success=False,
-                    response_time=response_time,
-                    error_message=f"Backend error: {response.status_code}"
-                ))
-                
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail="Failed to retrieve entries from backend"
-                )
+            ))
+            
+            # Return in a clean format for GPT
+            return {
+                "success": True,
+                "entries": messages,
+                "count": len(messages),
+                "filtered_by_tags": data.get("filtered_by_tags")
+            }
+        else:
+            logger.error(f"Backend returned error: {response.status_code}")
+            
+            # Log failure to observer
+            response_time = (datetime.now() - start_time).total_seconds() * 1000
+            asyncio.create_task(log_to_observer(
+                user_id=user_id,
+                action_type=action_type,
+                success=False,
+                response_time=response_time,
+                error_message=f"Backend error: {response.status_code}"
+            ))
+            
+            raise HTTPException(
+                status_code=response.status_code,
+                detail="Failed to retrieve entries from backend"
+            )
                 
     except httpx.RequestError as e:
         logger.error(f"Request to backend failed: {e}")
