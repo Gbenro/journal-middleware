@@ -528,7 +528,17 @@ async def test_observer():
 
 @app.get("/health")
 async def health_check():
-    """Check middleware health and backend connectivity with performance metrics"""
+    """Simple health check for Railway deployment - no external dependencies"""
+    return {
+        "status": "healthy",
+        "service": "middleware",
+        "version": "2.0.0",
+        "timestamp": datetime.utcnow()
+    }
+
+@app.get("/health/detailed")
+async def detailed_health_check():
+    """Detailed health check with backend connectivity - for monitoring"""
     try:
         # Test backend connection with optimized client
         response = await http_client.request_with_retry("GET", f"{BACKEND_URL}/health")
@@ -568,7 +578,7 @@ async def health_check():
             "timestamp": datetime.utcnow()
         }
     except Exception as e:
-        logger.error(f"Health check failed: {e}")
+        logger.error(f"Detailed health check failed: {e}")
         return {
             "status": "degraded",
             "service": "middleware",
