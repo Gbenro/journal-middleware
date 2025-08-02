@@ -649,41 +649,22 @@ async def save_entry(entry: EntryCreate):
         response_cache.invalidate_pattern(f"get_daily_summary_{entry.user_id}")
         response_cache.invalidate_pattern("get_tags")
         
-        data = await make_backend_request(
-            "POST",
-            "/api/save",
-            json={
-                "content": entry.content,
-                "user_id": entry.user_id,
-                "manual_tags": entry.manual_tags,
-                "auto_tag": entry.auto_tag
-            }
-        )
-        
-        logger.info(f"Entry saved successfully for user {entry.user_id} with {data.get('tag_count', 0)} tags")
-                
-                # Parse and process any enhancement suggestions in the content
-                enhancements = parse_enhancements_from_content(entry.content, entry.user_id)
-                enhancement_count = 0
-                
-                if enhancements:
-                    logger.info(f"💡 Found {len(enhancements)} enhancement suggestions in entry")
-                    for enhancement in enhancements:
-                        try:
-                            # Send enhancement to proxy agent
-                            asyncio.create_task(log_enhancement_to_proxy(
-                                title=enhancement["title"],
-                                description=enhancement["description"],
-                                category=enhancement["category"],
-                                priority=enhancement["priority"],
-                                reasoning=enhancement["reasoning"],
-                                triggered_by=enhancement["triggered_by"],
-                                user_context=enhancement["user_context"]
-                            ))
-                            enhancement_count += 1
-                            logger.info(f"✨ Enhancement '{enhancement['title']}' queued for processing")
-                        except Exception as e:
-                            logger.warning(f"⚠️ Failed to process enhancement: {e}")
+        # Use httpx directly to call backend
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{BACKEND_URL}/api/save",
+                json={
+                    "content": entry.content,
+                    "user_id": entry.user_id,
+                    "manual_tags": entry.manual_tags,
+                    "auto_tag": entry.auto_tag
+                },
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"Entry saved successfully for user {entry.user_id} with {data.get('tag_count', 0)} tags")
                 
                 # Log to observer service (fire-and-forget)
                 response_time = (datetime.now() - start_time).total_seconds() * 1000
@@ -695,34 +676,18 @@ async def save_entry(entry: EntryCreate):
                     metadata={
                         "tag_count": data.get("tag_count", 0),
                         "auto_tagged": entry.auto_tag,
-                        "manual_tags": len(entry.manual_tags) if entry.manual_tags else 0,
-                        "enhancement_count": enhancement_count
+                        "manual_tags": len(entry.manual_tags) if entry.manual_tags else 0
                     }
                 ))
                 
-                response_message = "Journal entry saved successfully"
-                if enhancement_count > 0:
-                    response_message += f" with {enhancement_count} enhancement{'s' if enhancement_count != 1 else ''} detected"
-                
                 return EntryResponse(
                     success=True,
-                    message=response_message,
+                    message="Journal entry saved successfully",
                     id=data.get("message_id"),
                     applied_tags=data.get("applied_tags", [])
                 )
             else:
                 logger.error(f"Backend returned error: {response.status_code}")
-                
-                # Log failure to observer
-                response_time = (datetime.now() - start_time).total_seconds() * 1000
-                asyncio.create_task(log_to_observer(
-                    user_id=entry.user_id,
-                    action_type="store",
-                    success=False,
-                    response_time=response_time,
-                    error_message=f"Backend error: {response.status_code}"
-                ))
-                
                 raise HTTPException(
                     status_code=response.status_code,
                     detail="Failed to save entry to backend"
